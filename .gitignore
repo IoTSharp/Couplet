@@ -1,0 +1,36 @@
+# IDE and user state
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build and test output
+**/[Bb]in/
+**/[Oo]bj/
+artifacts/
+TestResults/
+BenchmarkDotNet.Artifacts/
+coverage*.json
+coverage*.xml
+*.trx
+*.nupkg
+*.snupkg
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.key
+
+# Couplet local indexes and diagnostics
+.couplet/
+*.couplet-db/
+diagnostics/
+
+# Operating-system files
+.DS_Store
+Thumbs.db

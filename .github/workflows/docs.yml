@@ -1,0 +1,24 @@
+name: Documentation baseline
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify repository and roadmap contracts
+        shell: pwsh
+        run: ./eng/verify-roadmap.ps1
+
+      - name: Check committed whitespace
+        shell: bash
+        run: git diff-tree --check --root -r HEAD
