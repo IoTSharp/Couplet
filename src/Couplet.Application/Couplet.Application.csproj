@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Couplet.Core\Couplet.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot Condition="'$(CoupletPublishAot)' == 'true'">true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Couplet.Infrastructure.SonnetDb\Couplet.Infrastructure.SonnetDb.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Couplet.Application\Couplet.Application.csproj" />
+    <ProjectReference Include="..\..\src\Couplet.Cli\Couplet.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Couplet.Core\Couplet.Core.csproj" />
+    <ProjectReference Include="..\..\src\Couplet.Daemon\Couplet.Daemon.csproj" />
+    <ProjectReference Include="..\..\src\Couplet.Infrastructure.SonnetDb\Couplet.Infrastructure.SonnetDb.csproj" />
+    <ProjectReference Include="..\..\src\Couplet.McpServer\Couplet.McpServer.csproj" />
+  </ItemGroup>
+</Project>

@@ -12,8 +12,8 @@
 | C0-C4 路线、阻塞关系与退出门禁 | ✅ 已完成 | 本文、`docs/quality-gates.md` |
 | 原生属性图无旁路决策 | ✅ 已完成 | ADR 0002、`docs/capability-gaps.md` |
 | 性能缺口优先回收决策 | ✅ 已完成 | ADR 0003、`docs/quality-gates.md` |
-| Couplet 可执行产品 | 📋 未开始 | 从 C0 实现阶段开始交付 |
-| SonnetDB 原生属性图 | 📋 未实现 | SonnetDB M40 `#341`-`#367` |
+| Couplet 可执行产品 | 🚧 C0 骨架 | CPL-007 提供版本/能力报告和 daemon 生命周期；索引与 MCP 工具仍 unavailable |
+| SonnetDB 原生属性图 | 🚧 源码 API 可联调 | 固定提交已含公开 `GraphStore`；新 package 与 M40/Couplet 联合门禁尚未通过 |
 
 状态符号只描述本行结果；“路线已完成”不等于“路线中的产品能力已完成”。
 
@@ -55,7 +55,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - **CPL-004**：多语言 Small/Medium/Large fixture manifest、golden answers、benchmark runner 和 paired Agent eval runner。
 - **CPL-005**：安全、隐私、ignore/deny、provider 和数据生命周期合同。
 - **CPL-006**：八个 typed、版本化、首版只读的 MCP schema；统一 initialize workspace handshake、错误、分页、预算、新鲜度和 evidence 模型。
-- **CPL-007**：.NET 10 solution、CLI/daemon/MCP Server 边界、`SonnetDB.Core` 单向 package 引用、dependency/trim/AOT spike 和按 executable/worker 的发布能力矩阵；不发布空壳包。
+- **CPL-007**：.NET 10 solution、CLI/daemon/MCP Server 边界、`SonnetDB.Core` 单向依赖、dependency/trim/AOT spike 和按 executable/worker 的发布能力矩阵；不发布空壳包。🚧 2026-08-24 已完成源码引用模式的实现与 win-x64 AOT spike；固定 package 切换等待包含 Graph API 的新 `SonnetDB.Core` 发布，切换前阻塞独立发布。
 
 退出门禁：
 
@@ -64,7 +64,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - [质量与性能门禁](docs/quality-gates.md)中的语料、硬件指纹、指标和证据格式可由 CI/本地 runner 生成。
 - Couplet 合同/eval runner 与 SonnetDB `#341` 对代码知识 golden journey、语料和预冻结 SLO 达成同一版本记录；未满足时 C0 不标完成，但不阻止双方继续实现已冻结的非冲突地基。
 
-状态：📋 计划。
+状态：🚧 进行中。CPL-007 的当前源码依赖切片已实现；CPL-001~006、固定 package 切换和 C0 联合门禁仍未完成。
 
 ## C1：增量代码索引
 

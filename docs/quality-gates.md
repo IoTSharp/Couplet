@@ -26,6 +26,7 @@
 首次 C0 evidence PR 必须归档准确 CPU 型号、物理/逻辑核、32 GiB RAM、NVMe 型号/文件系统、OS、.NET SDK/runtime、power profile 和后台负载。参考最低配置为 8 physical / 16 logical cores、32 GiB RAM、单机 NVMe；离线本地 embedding 与在线 provider 延迟分开统计。
 
 - 普通 Release 必须报告；SonnetDB Core 和 CPL-007 能力矩阵中声明 AOT 的 Couplet executable/worker 另报 Native AOT。不能 AOT 的成熟 parser worker 必须隔离、如实标注并通过 trim/安全门禁，不以 Debug 结果设门禁。
+- CPL-007 当前 analyzer/publish 证据与逐进程限制记录在 [CPL-007 基础与发布边界](cpl-007-foundation.md)；该骨架证据不能替代 C1-C4 的语料、恢复或容量结果。
 - cold/warm 分开，预热、样本数、P50/P95/P99 与失败样本全部保留。
 - 在线 provider 网络时间不计入本地查询 SLO，但端到端 Agent eval 计入真实墙钟和成本。
 - 目标在看过候选发布结果后不得调低。确需变更必须提前用 ADR 说明语料/硬件/用户价值证据，并保留旧目标对比。

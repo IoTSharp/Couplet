@@ -8,7 +8,12 @@ $requiredFiles = @(
     '.editorconfig',
     '.gitattributes',
     '.gitignore',
+    '.github/workflows/ci.yml',
     '.github/workflows/docs.yml',
+    'Couplet.slnx',
+    'Directory.Build.props',
+    'Directory.Packages.props',
+    'global.json',
     'README.md',
     'ROADMAP.md',
     'AGENTS.md',
@@ -18,10 +23,12 @@ $requiredFiles = @(
     'docs/golden-journeys.md',
     'docs/quality-gates.md',
     'docs/capability-gaps.md',
+    'docs/cpl-007-foundation.md',
     'docs/sonnetdb-capability-matrix.md',
     'docs/adr/0001-product-and-repository-boundary.md',
     'docs/adr/0002-native-property-graph-no-bypass.md',
-    'docs/adr/0003-performance-gaps-block-release.md'
+    'docs/adr/0003-performance-gaps-block-release.md',
+    'docs/adr/0004-dotnet-host-and-source-dependency.md'
 )
 
 $errors = [System.Collections.Generic.List[string]]::new()

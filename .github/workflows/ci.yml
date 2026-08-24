@@ -1,0 +1,40 @@
+name: CPL-007 build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out Couplet
+        uses: actions/checkout@v4
+
+      - name: Check out pinned SonnetDB source
+        uses: actions/checkout@v4
+        with:
+          repository: IoTSharp/SonnetDB
+          ref: a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70
+          path: SonnetDB
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.400
+
+      - name: Restore locked dependencies
+        shell: pwsh
+        run: dotnet restore Couplet.slnx --locked-mode -p:SonnetDbSourceRoot='${{ github.workspace }}\SonnetDB'
+
+      - name: Build Release with analyzers
+        shell: pwsh
+        run: dotnet build Couplet.slnx --configuration Release --no-restore -p:SonnetDbSourceRoot='${{ github.workspace }}\SonnetDB'
+
+      - name: Run CPL-007 tests
+        shell: pwsh
+        run: dotnet test tests/Couplet.Tests/Couplet.Tests.csproj --configuration Release --no-build --no-restore

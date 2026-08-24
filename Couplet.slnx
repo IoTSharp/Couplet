@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Couplet.Core/Couplet.Core.csproj" />
+    <Project Path="src/Couplet.Application/Couplet.Application.csproj" />
+    <Project Path="src/Couplet.Infrastructure.SonnetDb/Couplet.Infrastructure.SonnetDb.csproj" />
+    <Project Path="src/Couplet.Cli/Couplet.Cli.csproj" />
+    <Project Path="src/Couplet.Daemon/Couplet.Daemon.csproj" />
+    <Project Path="src/Couplet.McpServer/Couplet.McpServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Couplet.Tests/Couplet.Tests.csproj" />
+  </Folder>
+</Solution>

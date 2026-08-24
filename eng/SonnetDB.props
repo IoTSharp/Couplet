@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <SonnetDbDependencyMode>Source</SonnetDbDependencyMode>
+    <SonnetDbSourceCommit>a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70</SonnetDbSourceCommit>
+    <SonnetDbSourceRoot Condition="'$(SonnetDbSourceRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\SonnetDB'))</SonnetDbSourceRoot>
+    <SonnetDbSourceProject Condition="'$(SonnetDbSourceProject)' == ''">$(SonnetDbSourceRoot)\src\SonnetDB.Core\SonnetDB.Core.csproj</SonnetDbSourceProject>
+    <SonnetDbBuildRoot Condition="'$(SonnetDbBuildRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\artifacts\sonnetdb'))\</SonnetDbBuildRoot>
+  </PropertyGroup>
+</Project>

@@ -27,6 +27,12 @@ CPL-003/CPL-007 实现启动 handshake，至少交换：
 
 Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自动可用；能力未达到路线 gate 时返回 `capability_unavailable`。
 
+### CPL-007 当前实现状态
+
+- NuGet `SonnetDB.Core 3.0.1` 的 `net10.0` 程序集声明 trim/AOT 兼容，但没有公开 `SonnetDB.Graphs` / `GraphStore` 类型，因此不能作为 Couplet 图能力基线。
+- 当前只固定引用 SonnetDB 源码提交 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70`；构建验证提交和公开 `GraphStore` 类型，但不据此把任何产品 capability 标为可用。
+- capability handshake 尚未实现，所有存储、索引和 MCP 产品能力继续返回 `capability_unavailable`。新 Core 包发布后必须按 ADR 0004 的迁移门禁切回固定 package。
+
 ## 变更规则
 
 - SonnetDB public contract 只能按兼容策略扩展；Couplet 固定 package version，不跟随浮动 main。
