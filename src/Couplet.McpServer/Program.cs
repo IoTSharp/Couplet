@@ -14,4 +14,12 @@ internal static class Program
         TextWriter error,
         CancellationToken cancellationToken) =>
         CoupletRuntime.RunAsync(ComponentKind.McpServer, arguments, output, error, cancellationToken);
+
+    internal static Task<int> RunAsync(
+        IReadOnlyList<string> arguments,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken) =>
+        CoupletRuntime.RunAsync(ComponentKind.McpServer, arguments, input, output, error, cancellationToken);
 }

@@ -1,6 +1,10 @@
 using Couplet.Application.Capabilities;
+using Couplet.Application.Evaluation;
+using Couplet.Application.Mcp;
 using Couplet.Application.Serialization;
 using Couplet.Core.Capabilities;
+using Couplet.Core.Evaluation;
+using Couplet.Core.Mcp;
 
 namespace Couplet.Application.Hosting;
 
@@ -39,9 +43,29 @@ public sealed class ComponentRunner
         IReadOnlyList<string> arguments,
         TextWriter output,
         TextWriter error,
+        CancellationToken cancellationToken) =>
+        await RunAsync(component, arguments, TextReader.Null, output, error, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// 执行带标准输入的组件命令。
+    /// </summary>
+    /// <param name="component">组件类型。</param>
+    /// <param name="arguments">命令参数。</param>
+    /// <param name="input">标准输入。</param>
+    /// <param name="output">标准输出。</param>
+    /// <param name="error">标准错误。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>进程退出码。</returns>
+    public async Task<int> RunAsync(
+        ComponentKind component,
+        IReadOnlyList<string> arguments,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
 
@@ -51,14 +75,172 @@ public sealed class ComponentRunner
         {
             "version" or "--version" => await WriteVersionAsync(component, output).ConfigureAwait(false),
             "capabilities" or "--capabilities" => await WriteCapabilitiesAsync(component, output).ConfigureAwait(false),
+            "c0-evidence" when component == ComponentKind.Cli =>
+                await RunC0EvidenceAsync(arguments, output, error).ConfigureAwait(false),
+            "fixture-generate" when component == ComponentKind.Cli =>
+                await RunFixtureGeneratorAsync(arguments, output, error, cancellationToken).ConfigureAwait(false),
             "run" when component == ComponentKind.Daemon =>
                 await RunDaemonAsync(output, cancellationToken).ConfigureAwait(false),
             "serve" when component == ComponentKind.McpServer =>
-                await WriteUnavailableAsync(component, error, "cpl_006_not_implemented").ConfigureAwait(false),
+                await RunMcpServerAsync(arguments, input, output, error, cancellationToken).ConfigureAwait(false),
             "run" or "serve" =>
                 await WriteUnavailableAsync(component, error, "component_command_not_implemented").ConfigureAwait(false),
             _ => await WriteInvalidCommandAsync(component, error).ConfigureAwait(false),
         };
+    }
+
+    private static async Task<int> RunC0EvidenceAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error)
+    {
+        string root = Option(arguments, "--repository") ?? Environment.CurrentDirectory;
+        string fixture = Option(arguments, "--fixture-manifest")
+            ?? Path.Combine(root, "fixtures", "c0", "manifest.v1.json");
+        string golden = Option(arguments, "--golden-answers")
+            ?? Path.Combine(root, "fixtures", "c0", "golden-answers.v1.json");
+        string eval = Option(arguments, "--agent-eval-manifest")
+            ?? Path.Combine(root, "fixtures", "c0", "agent-eval-manifest.v1.json");
+        string commit = Option(arguments, "--commit")
+            ?? Environment.GetEnvironmentVariable("GITHUB_SHA")
+            ?? "working_tree";
+
+        try
+        {
+            C0EvidenceReport report = C0EvidenceRunner.Run(fixture, golden, eval, commit);
+            await output.WriteLineAsync(CoupletJsonSerializer.Serialize(report)).ConfigureAwait(false);
+            return report.ContractsPassed && report.AgentEvalRunnerReady ? _successExitCode : 1;
+        }
+        catch (IOException)
+        {
+            await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new ErrorReport
+            {
+                SchemaVersion = "couplet.c0_evidence.error.v1",
+                Code = "invalid_input",
+                Component = "cli",
+                Reason = "evidence_input_unreadable",
+            })).ConfigureAwait(false);
+            return _invalidCommandExitCode;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new ErrorReport
+            {
+                SchemaVersion = "couplet.c0_evidence.error.v1",
+                Code = "invalid_input",
+                Component = "cli",
+                Reason = "evidence_input_schema_invalid",
+            })).ConfigureAwait(false);
+            return _invalidCommandExitCode;
+        }
+    }
+
+    private static async Task<int> RunFixtureGeneratorAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        string root = Option(arguments, "--repository") ?? Environment.CurrentDirectory;
+        string manifestPath = Option(arguments, "--fixture-manifest")
+            ?? Path.Combine(root, "fixtures", "c0", "manifest.v1.json");
+        string? scaleId = Option(arguments, "--scale");
+        string? destination = Option(arguments, "--output");
+        if (scaleId is null || destination is null)
+        {
+            return await WriteInvalidCommandAsync(ComponentKind.Cli, error).ConfigureAwait(false);
+        }
+
+        try
+        {
+            string json = File.ReadAllText(manifestPath);
+            FixtureManifest manifest = CoupletJsonSerializer.Deserialize(json, CoupletJsonContext.Default.FixtureManifest);
+            CorpusScaleDefinition? scale = manifest.Scales.SingleOrDefault(
+                value => string.Equals(value.Id, scaleId, StringComparison.Ordinal));
+            if (scale is null)
+            {
+                return await WriteInvalidCommandAsync(ComponentKind.Cli, error).ConfigureAwait(false);
+            }
+
+            FixtureGenerationReport report = await DeterministicFixtureGenerator.GenerateAsync(
+                scale,
+                destination,
+                cancellationToken).ConfigureAwait(false);
+            await output.WriteLineAsync(CoupletJsonSerializer.Serialize(report)).ConfigureAwait(false);
+            return _successExitCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return await WriteUnavailableAsync(ComponentKind.Cli, error, "fixture_generation_cancelled").ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return await WriteUnavailableAsync(ComponentKind.Cli, error, "fixture_output_unavailable").ConfigureAwait(false);
+        }
+    }
+
+    private static string? Option(IReadOnlyList<string> arguments, string name)
+    {
+        for (int index = 1; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], name, StringComparison.Ordinal))
+            {
+                return arguments[index + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<int> RunMcpServerAsync(
+        IReadOnlyList<string> arguments,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        int workspaceOption = -1;
+        for (int index = 1; index < arguments.Count; index++)
+        {
+            if (string.Equals(arguments[index], "--workspace", StringComparison.Ordinal))
+            {
+                workspaceOption = index;
+                break;
+            }
+        }
+
+        if (workspaceOption < 0 || workspaceOption + 1 >= arguments.Count)
+        {
+            await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new McpError
+            {
+                Code = McpErrorCodes.InvalidRequest,
+                Reason = "explicit_workspace_required",
+                Retryable = false,
+                CorrelationId = "startup",
+            })).ConfigureAwait(false);
+            return _invalidCommandExitCode;
+        }
+
+        WorkspaceBinding binding;
+        try
+        {
+            binding = McpWorkspaceBinder.Bind(arguments[workspaceOption + 1]);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new McpError
+            {
+                Code = McpErrorCodes.WorkspaceNotFound,
+                Reason = "configured_workspace_not_found",
+                Retryable = false,
+                CorrelationId = "startup",
+            })).ConfigureAwait(false);
+            return _capabilityUnavailableExitCode;
+        }
+
+        var host = new McpProtocolHost(binding);
+        await host.RunAsync(input, output, cancellationToken).ConfigureAwait(false);
+        return _successExitCode;
     }
 
     private static async Task<int> WriteVersionAsync(ComponentKind component, TextWriter output)

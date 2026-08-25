@@ -32,6 +32,30 @@ public static class CoupletRuntime
     }
 
     /// <summary>
+    /// 通过指定标准输入输出运行一个 Couplet 组件。
+    /// </summary>
+    /// <param name="component">组件类型。</param>
+    /// <param name="arguments">命令参数。</param>
+    /// <param name="input">标准输入。</param>
+    /// <param name="output">标准输出。</param>
+    /// <param name="error">标准错误。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>进程退出码。</returns>
+    public static Task<int> RunAsync(
+        ComponentKind component,
+        IReadOnlyList<string> arguments,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var probe = new SonnetDbCapabilityProbe();
+        var reportService = new CapabilityReportService(probe);
+        var runner = new ComponentRunner(reportService);
+        return runner.RunAsync(component, arguments, input, output, error, cancellationToken);
+    }
+
+    /// <summary>
     /// 使用控制台输入输出和 Ctrl+C 生命周期运行一个 Couplet 组件。
     /// </summary>
     /// <param name="component">组件类型。</param>
@@ -57,6 +81,7 @@ public static class CoupletRuntime
             return await RunAsync(
                 component,
                 arguments,
+                Console.In,
                 Console.Out,
                 Console.Error,
                 cancellation.Token).ConfigureAwait(false);

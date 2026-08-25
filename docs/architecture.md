@@ -6,7 +6,7 @@ Couplet 负责把一个本地代码工作区转换为可供编码 Agent 查询�
 
 - **Couplet 拥有**：工作区/Git 识别、语言适配、代码 schema、增量调度、embedding 执行、检索意图、对 Core 已返回的有界统一候选做 context selection、MCP、CLI/daemon 和 Agent 集成。
 - **SonnetDB 拥有**：KV、Document、FullText、Vector、原生 Graph、Hybrid Search 的持久化与查询，候选访问/去重/融合/原生图扩展、事务、快照、WAL、checkpoint、backup/recovery、执行计划、资源治理和通用性能。
-- **依赖方向**：`Couplet -> SonnetDB.Core`。Couplet 只使用版本化公开 API，不读取内部 key layout，不复制 Core 代码；SonnetDB 不包含代码语言、MCP 或 Agent 产品逻辑。两个仓库保持同级独立，不互相作为 Git submodule。正式发布仍要求固定 package version；由于 `SonnetDB.Core 3.0.1` 尚无 Graph API，CPL-007 按 ADR 0004 临时使用提交锁定的相邻源码引用，并阻塞独立发布。
+- **依赖方向**：`Couplet -> SonnetDB.Core`。Couplet 只使用版本化公开 API，不读取内部 key layout，不复制 Core 代码；SonnetDB 不包含代码语言、MCP 或 Agent 产品逻辑。两个仓库保持同级独立，不互相作为 Git submodule。默认构建固定 `SonnetDB.Core 3.1.0` package 和 content hash，不依赖相邻源码 checkout。
 
 ## 2. 逻辑组件
 
@@ -81,7 +81,7 @@ Couplet 不假设 SonnetDB 当前提供跨所有模型的单事务。索引采�
 
 首版候选边：`Contains`、`Defines`、`References`、`Calls`、`Imports`、`Inherits`、`Implements`、`Overrides`、`DependsOn`、`Builds`、`Covers`。
 
-每个节点/边至少包含 stable ID、language、source revision、source span/evidence、adapter version 和 confidence。静态可证明关系使用 `exact`；动态语言启发式关系必须明确标为 `inferred`，并保留推导证据。具体 schema 在 C0 通过 versioned contract 冻结，只允许兼容扩展。
+每个节点/边至少包含 stable ID、language、source revision、source span/evidence、adapter version 和 confidence。静态可证明关系使用 `exact`；动态语言启发式关系必须明确标为 `inferred`，并保留推导证据。C0 已冻结 `couplet.code_graph.v1` 和 `couplet.generation.v1`，详见 [Code Graph v1 合同](code-graph-v1-contract.md)。
 
 ## 7. 查询路径
 
@@ -105,7 +105,7 @@ typed request
 
 ## 8. 进程与接入
 
-首版以一个本地 Couplet host 托管 workspace coordinator、嵌入式 SonnetDB 和 MCP Server。CPL-007 先把共享 `Couplet.Core` / `Couplet.Application`、SonnetDB adapter、CLI、daemon 与 MCP Server executable 分开；当前 executable 只提供诊断和生命周期，MCP 协议尚未启动。C0 必须先验证语言 parser/runtime 依赖的 trim/AOT 与隔离边界；若某个成熟 parser 不能进入 Native AOT host，可使用受控的本地 parser worker，但它不能拥有数据库或第二份索引，发布矩阵必须如实标注各 executable/worker 的 AOT 状态。MCP 首版只读，避免编码 Agent 通过知识工具修改仓库或数据库。CLI 最终提供启动、停止、状态、索引、重建、诊断和 eval；Codex 与 Claude Code 通过同一 MCP schema 接入，不维护客户端专属语义。
+首版以一个本地 Couplet host 托管 workspace coordinator、嵌入式 SonnetDB 和 MCP Server。C0 已把共享 `Couplet.Core` / `Couplet.Application`、SonnetDB adapter、CLI、daemon 与 MCP Server executable 分开，并实现只读 stdio initialize、schema discovery 和 capability-gated tool call；索引查询仍 unavailable。若后续成熟 parser 不能进入 Native AOT host，可使用受控的本地 parser worker，但它不能拥有数据库或第二份索引，发布矩阵必须如实标注各 executable/worker 的 AOT 状态。Codex 与 Claude Code 使用同一 schema，不维护客户端专属语义。
 
 远程多租户、协作写入、IDE 编辑器插件和自动改码不属于首版。它们只有在本地单机合同、权限和生产门禁通过后才能单独进入路线。
 

@@ -2,7 +2,7 @@
 
 Couplet 是一个面向 Codex、Claude Code 等编码 Agent 的本地优先代码知识与上下文引擎。它把代码解析、增量索引、原生属性图、全文/向量混合检索和有预算的上下文组装连成一条可核验链路，并以嵌入式 `SonnetDB.Core` 作为唯一数据引擎。
 
-> 仓库与路线基线已于 2026-08-10 建立。CPL-007 已增加可构建、可测试的 .NET 10 进程骨架，但只提供版本、能力报告和 daemon 生命周期；索引器、capability handshake、typed MCP 协议/工具和代码图产品能力仍未实现。
+> C0 基础与合同已于 2026-08-25 完成：代码图/generation、安全、SonnetDB handshake、fixture/eval runner 和八个 typed MCP schema 均有可运行实现与自动化证据。C1 索引器以及 C2/C3 图与混合检索能力仍未实现，MCP 工具会如实返回 `capability_unavailable`。
 
 ## 产品边界
 
@@ -23,21 +23,20 @@ Codex / Claude Code / other MCP clients
 
 - 一旦真实仓库、执行计划或固定硬件报告暴露通用存储、图、全文、向量或混合检索缺口，该缺口必须回收到 SonnetDB 对应里程碑优先修复，并阻塞 Couplet 的相关发布阶段。
 
-## CPL-007 可执行面
+## C0 可执行面
 
-solution 明确分离 `Couplet.Core`、`Couplet.Application`、`Couplet.Infrastructure.SonnetDb`、CLI、daemon 和 MCP Server 进程。当前发布的 `SonnetDB.Core 3.0.1` 不包含公开 Graph API，因此本切片临时固定引用相邻 `D:\source\SonnetDB` 的提交 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70`；构建会校验提交，并把 SonnetDB 的 restore/build 输出隔离到 Couplet 的 `artifacts/`。
-
-这项源码引用是发布阻塞项。含图 API 的新 `SonnetDB.Core` 发布后，必须切回固定 package version 和 lock file，才能把 Couplet 作为独立 checkout 构建或发布。
+solution 明确分离 `Couplet.Core`、`Couplet.Application`、`Couplet.Infrastructure.SonnetDb`、CLI、daemon 和 MCP Server 进程。adapter 固定引用官方 `SonnetDB.Core 3.1.0` package，lock file 同时冻结 package content hash；默认构建不依赖相邻 SonnetDB checkout。handshake 会报告 package/assembly 版本、trim/AOT 元数据、public API 联调状态和阻塞发布的 gap。
 
 ```powershell
 dotnet restore Couplet.slnx
 dotnet build Couplet.slnx --configuration Release --no-restore
 dotnet test tests/Couplet.Tests/Couplet.Tests.csproj --configuration Release --no-restore
 dotnet run --project src/Couplet.Cli -- capabilities
-dotnet run --project src/Couplet.McpServer -- serve
+dotnet run --project src/Couplet.Cli -- c0-evidence --repository . --commit working_tree
+dotnet run --project src/Couplet.McpServer -- serve --workspace .
 ```
 
-最后一条命令当前按设计返回 `capability_unavailable`，不会启动一个伪 MCP Server。依赖、许可证、trim/AOT spike 和逐进程发布矩阵见 [CPL-007 基础与发布边界](docs/cpl-007-foundation.md)。
+MCP Server 当前实现 stdio `initialize`、`ping`、`tools/list` 和 `tools/call`，公开八个只读 schema；索引/图工具仍按对应阶段和 gap 返回结构化 unavailable 错误。依赖、许可证、trim/AOT 和逐进程发布矩阵见 [CPL-007 基础与发布边界](docs/cpl-007-foundation.md)。
 
 ## 目标能力
 
@@ -70,7 +69,10 @@ dotnet run --project src/Couplet.McpServer -- serve
 ## 文档
 
 - [架构](docs/architecture.md)
+- [Code Graph v1 合同](docs/code-graph-v1-contract.md)
 - [MCP v1 合同](docs/mcp-v1-contract.md)
+- [安全、隐私与数据生命周期](docs/security-and-data-lifecycle.md)
+- [C0 合同与 Evidence Runner](docs/c0-evidence.md)
 - [Golden journeys](docs/golden-journeys.md)
 - [质量与性能门禁](docs/quality-gates.md)
 - [能力缺口目录](docs/capability-gaps.md)
@@ -79,8 +81,8 @@ dotnet run --project src/Couplet.McpServer -- serve
 - [ADR 0001：产品与仓库边界](docs/adr/0001-product-and-repository-boundary.md)
 - [ADR 0002：原生属性图无旁路](docs/adr/0002-native-property-graph-no-bypass.md)
 - [ADR 0003：性能缺口阻塞发布](docs/adr/0003-performance-gaps-block-release.md)
-- [ADR 0004：.NET 宿主与临时源码依赖](docs/adr/0004-dotnet-host-and-source-dependency.md)
+- [ADR 0004：.NET 宿主与 SonnetDB 固定依赖](docs/adr/0004-dotnet-host-and-source-dependency.md)
 
 ## 当前状态
 
-仓库当前处于 C0 实现阶段。CPL-007 的诊断/生命周期骨架可运行，但不存在可用索引或 MCP 工具，也不发布 NuGet 包；固定 SonnetDB package 切换、CPL-001~006 合同实现和 C0 联合门禁仍未完成。许可方案尚未确定；在维护者作出明确决定前，本仓库不声明开源许可证。
+C0 已完成，仓库进入 C1 实现阶段。当前不存在可查询索引，所有八个工具的产品能力仍 unavailable；C2 Preview、C3 Beta 和 C4 Production 继续受 SonnetDB 联合门禁约束。许可方案尚未确定；在维护者作出明确决定前，本仓库不声明开源许可证。

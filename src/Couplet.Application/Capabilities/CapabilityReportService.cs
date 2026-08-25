@@ -42,9 +42,15 @@ public sealed class CapabilityReportService
                 component == ComponentKind.Daemon
                     ? Available("daemon.lifecycle")
                     : Unavailable("daemon.lifecycle", "not_applicable"),
-                Unavailable("sonnetdb.capability_handshake", "capability_handshake_not_implemented"),
+                Available("sonnetdb.capability_handshake"),
+                Available("contracts.code_graph_v1"),
+                Available("contracts.security_v1"),
+                Available("mcp.schema_v1"),
+                Available("evaluation.c0_runner"),
                 Unavailable("workspace.index", "c1_not_implemented"),
-                Unavailable("mcp.protocol", "cpl_006_not_implemented"),
+                component == ComponentKind.McpServer
+                    ? Available("mcp.protocol")
+                    : Unavailable("mcp.protocol", "not_applicable"),
             ],
         };
     }

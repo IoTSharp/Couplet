@@ -14,10 +14,10 @@
 
 | ID | 缺口 | Owner / 路线 | 阻塞 | 状态 | 允许行为 |
 |---|---|---|---|---|---|
-| CG-001 | 固定 SonnetDB 源码已含公开原生图 API，但含图 package 尚未发布，Couplet 图 workload 与 `#352` 恢复/容量联合门禁尚未通过 | SonnetDB M40 `#341`-`#352` + Couplet C2 | Couplet C2 Preview 发布及后续 | known | 允许针对固定源码 API 编译联调；图工具对外仍返回 `capability_unavailable`，新 package、双方 correctness/recovery 与 performance/capacity 证据共同关闭缺口 |
+| CG-001 | `SonnetDB.Core 3.1.0` 已含公开原生图 API，但 Couplet 图 workload 与 `#352` 恢复/容量联合门禁尚未通过 | SonnetDB M40 `#352` + Couplet C2 | Couplet C2 Preview 发布及后续 | known | 允许针对固定 package API 编译联调；图工具对外仍返回 `capability_unavailable`，双方 correctness/recovery 与 performance/capacity 证据共同关闭缺口 |
 | CG-002 | FullText + Vector + Native Graph 的 shared typed hybrid plan 和实际访问路径尚未通过 | SonnetDB M40 `#353`-`#359`，关联 M35/M36 | Couplet C3 Beta 发布及后续 | known | 允许对目标 API 联调；不得产品层多路 merge/扩图，双方证据共同关闭 `#359` |
 | CG-003 | 生产图快照、维护、7 天长稳、Native AOT 与固定硬件发布证据尚未通过 | SonnetDB M40 `#360`-`#367` | Couplet C4/1.0 发布 | known | 与 `#360~#366` 并行取证；保持 Preview/Beta/未发布，双方证据共同关闭 `#367` |
-| CG-004 | Couplet 当前只有仓库与路线基线，无可执行索引器、MCP Server 或 eval runner | Couplet C0 | Couplet 所有产品能力 | known | 如实标为规划阶段，不发布空壳包 |
+| CG-004 | C0 曾缺少可执行 typed MCP、fixture/eval runner 和固定 package | Couplet C0 | C0 合同门禁 | closed | 2026-08-25 由固定 package、八工具 schema、stdio smoke、35 个测试和 C0 evidence 关闭；索引能力属于 C1，继续 unavailable |
 | CG-005 | 跨模型 generation filter、active manifest 原子切换、query snapshot/lease、稳定 cursor、旧 generation 清理及 crash/reopen 合同尚未联调证明 | SonnetDB M40 `#343/#346` + Couplet CPL-002/CPL-013/CPL-015 | Couplet C1 发布及后续 | known | 可开发 parser/fixture 和 staging；未关闭前不宣称原子、可恢复的增量索引完成，也不引入第二提交日志 |
 
 上述是已知前置能力，不是实测性能结论。首个 C0/C1 benchmark 产生后，任何未达 [质量与性能门禁](quality-gates.md)的路径必须新增独立 gap，不得只在日志或 PR 评论中记录。

@@ -31,6 +31,11 @@ public sealed class DependencyReport
     public required string ResolvedCommit { get; init; }
 
     /// <summary>
+    /// 获取 capability handshake 合同版本。
+    /// </summary>
+    public required string HandshakeVersion { get; init; }
+
+    /// <summary>
     /// 获取依赖能力握手状态。
     /// </summary>
     public required string State { get; init; }
@@ -54,4 +59,9 @@ public sealed class DependencyReport
     /// 获取当前源码基线是否包含公开图 API。
     /// </summary>
     public required bool GraphApiPresent { get; init; }
+
+    /// <summary>
+    /// 获取按 public API 和联合 gate 拆分的能力矩阵。
+    /// </summary>
+    public required IReadOnlyList<DependencyCapability> Capabilities { get; init; }
 }

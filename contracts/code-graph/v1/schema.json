@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://couplet.dev/contracts/code-graph/v1/schema.json",
+  "schema_version": "couplet.code_graph.v1",
+  "entity_kinds": ["Workspace", "Repository", "Project", "BuildTarget", "Module", "Namespace", "File", "Type", "Member", "Symbol", "Test", "Chunk"],
+  "relation_kinds": ["Contains", "Defines", "References", "Calls", "Imports", "Inherits", "Implements", "Overrides", "DependsOn", "Builds", "Covers"],
+  "$defs": {
+    "source_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "start_column", "start_byte", "end_line", "end_column", "end_byte"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "start_column": { "type": "integer", "minimum": 1 },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 },
+        "end_byte": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace_id", "source_revision", "index_revision", "adapter_id", "adapter_version", "content_hash"],
+      "properties": {
+        "workspace_id": { "type": "string" }, "source_revision": { "type": "string" }, "index_revision": { "type": "string" },
+        "adapter_id": { "type": "string" }, "adapter_version": { "type": "string" }, "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "score", "rule"],
+      "properties": { "kind": { "enum": ["Exact", "Inferred", "Unknown"] }, "score": { "type": "number", "minimum": 0, "maximum": 1 }, "rule": { "type": "string" } }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "kind", "display_name", "qualified_identity", "language", "provenance", "confidence"],
+      "properties": {
+        "schema_version": { "const": "couplet.code_graph.v1" }, "id": { "type": "string", "pattern": "^cpl_" },
+        "kind": { "enum": ["Workspace", "Repository", "Project", "BuildTarget", "Module", "Namespace", "File", "Type", "Member", "Symbol", "Test", "Chunk"] },
+        "display_name": { "type": "string" }, "qualified_identity": { "type": "string" }, "language": { "type": "string" },
+        "definition": { "oneOf": [ { "$ref": "#/$defs/source_span" }, { "type": "null" } ] },
+        "provenance": { "$ref": "#/$defs/provenance" }, "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "source_id", "target_id", "kind", "evidence", "provenance", "confidence"],
+      "properties": {
+        "schema_version": { "const": "couplet.code_graph.v1" }, "id": { "type": "string", "pattern": "^cpl_relation_" },
+        "source_id": { "type": "string" }, "target_id": { "type": "string" },
+        "kind": { "enum": ["Contains", "Defines", "References", "Calls", "Imports", "Inherits", "Implements", "Overrides", "DependsOn", "Builds", "Covers"] },
+        "evidence": { "$ref": "#/$defs/source_span" }, "provenance": { "$ref": "#/$defs/provenance" }, "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    }
+  }
+}

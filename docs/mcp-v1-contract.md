@@ -4,7 +4,7 @@
 
 MCP v1 面向本地编码 Agent，首版只读、typed、版本化。它查询 Couplet 已发布的 index revision，不提供任意 SQL、任意图查询、文件写入、shell 执行或数据库维护入口。
 
-本文冻结语义合同；具体 JSON Schema 和 source-generated C# DTO 在 C0 实现，并通过 snapshot/兼容性测试锁定。
+本文与 [`contracts/mcp/v1/schema-catalog.json`](../contracts/mcp/v1/schema-catalog.json) 共同冻结语义和 JSON Schema；source-generated C# DTO、stdio `initialize` / `tools/list` / `tools/call` 以及 snapshot/兼容性测试已在 C0 实现。C1-C3 未就绪工具仍返回结构化 `capability_unavailable`。
 
 ## 2. 通用请求
 

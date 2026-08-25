@@ -31,11 +31,13 @@ public sealed class SerializationContractTests
             Requested = "test",
             ResolvedVersion = "test",
             ResolvedCommit = "test",
+            HandshakeVersion = "couplet.sonnetdb_handshake.v1",
             State = "unavailable",
             Reason = "test",
             DeclaresTrimCompatible = true,
             DeclaresAotCompatible = true,
             GraphApiPresent = true,
+            Capabilities = [],
         };
     }
 }

@@ -104,3 +104,5 @@ Golden journey 是阶段验收输入，不是演示脚本。每条 journey 都�
 - 包含同名符号、partial/overload/generic、动态调用、generated code、symlink、binary、大文件、Unicode path、rename/delete 和 merge/conflict 边界。
 - corpus 可由固定开源 revision 或确定性生成器构成；manifest 记录许可证、commit/hash、生成参数和期望规模。
 - golden answer 变更必须单独审查，不能在修复实现的同一机械更新中无解释地接受新结果。
+
+C0 已把上述规模、语言 family、边界场景和首批 golden identity 冻结在 `fixtures/c0`，并由确定性生成器和 evidence runner 校验。生成的 100k/1m/10m LOC 语料不提交仓库；C1 起在语言 adapter 实现后补齐真实 symbol/edge/span golden 结果。

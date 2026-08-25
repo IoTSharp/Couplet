@@ -1,36 +1,34 @@
-# ADR 0004：.NET 宿主与临时源码依赖
+# ADR 0004：.NET 宿主与 SonnetDB 固定依赖
 
-- 状态：Accepted
-- 日期：2026-08-24
+- 状态：Accepted（2026-08-25 修订）
+- 初始日期：2026-08-24
 - 对应交付：CPL-007
 
 ## 背景
 
-CPL-007 需要建立 .NET 10 solution、共享 application/core 边界、CLI/daemon/MCP Server executable，以及 `Couplet -> SonnetDB.Core` 的单向依赖。NuGet 上最新稳定 `SonnetDB.Core 3.0.1` 只包含 `net10.0` 资产，程序集声明 `IsTrimmable=True` 与 `IsAotCompatible=True`，但没有公开 `SonnetDB.Graphs` 或 `GraphStore` 类型，不能作为后续原生图联调基线。
+CPL-007 需要建立 .NET 10 solution、共享 application/core 边界、CLI/daemon/MCP Server executable，以及 `Couplet -> SonnetDB.Core` 的单向依赖。2026-08-24 当时已发布的 `SonnetDB.Core 3.0.1` 没有公开 `SonnetDB.Graphs.GraphStore`，因此初始决策临时使用 commit-pinned 相邻源码引用，并明确阻塞独立发布。
 
-当前 canonical SonnetDB 仓库提交 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70` 已包含公开 `SonnetDB.Graphs.GraphStore`。在新 package 发布前，Couplet 必须能够编译当前公开 API，同时不能复制源码、创建第二个 SonnetDB checkout、读取内部格式或把源码引用误写成可发布状态。
+2026-08-25，官方 `SonnetDB.Core 3.1.0` 已包含公开 Graph API、`IsTrimmable=True` 和 `IsAotCompatible=True`。固定 package 迁移门禁已具备执行条件。
 
 ## 决策
 
 1. solution 分为 `Couplet.Core`、`Couplet.Application`、`Couplet.Infrastructure.SonnetDb`、`Couplet.Cli`、`Couplet.Daemon` 和 `Couplet.McpServer`；只有 adapter 引用 SonnetDB，executables 只组合 adapter。
-2. 当前使用相邻 canonical SonnetDB 仓库的 commit-pinned `ProjectReference`，固定提交为 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70`。构建在解析引用前校验提交、Core 相关源码工作树和两个 runtime package 版本；SonnetDB 其他子系统的并发修改不进入 Couplet 输出。
-3. NuGet restore graph 暂时排除外部项目，再以受控 MSBuild restore/build 把 SonnetDB 的 `obj/bin` 和 Jieba 字典生成输出重定向到 Couplet 已忽略的 `artifacts/sonnetdb`，避免修改 SonnetDB 工作树。
-4. SonnetDB 源码当前两个运行时包 `System.IO.Hashing` 与 `System.Numerics.Tensors` 在 Couplet adapter 中显式固定为 `10.0.10`，防止隔离 restore 后 framework-dependent 输出缺失运行时闭包。
-5. 所有 Couplet 生产项目启用 trim/AOT analyzer，并关闭反射型 `System.Text.Json`。三个 executable 可以用 `CoupletPublishAot=true` 生成 Native AOT，但当前结果只覆盖诊断/生命周期骨架。
-6. 不创建 parser worker；typed MCP executable 存在，但 `serve` 必须返回 `capability_unavailable`，不得注册或模拟尚未交付的工具。
+2. 默认构建固定 `SonnetDB.Core 3.1.0` `PackageReference`，版本只在 `Directory.Packages.props` 出现；每个消费项目的 lock file 固定官方 package content hash。restore 使用已忽略的仓库本地 `artifacts/nuget` cache，避免同 ID/version 的本机开发包污染官方依赖解析。
+3. 删除相邻源码提交校验、额外 SonnetDB checkout、外部 restore 和构建输出重定向。默认 checkout/build 不依赖 `D:\source\SonnetDB`。
+4. `System.IO.Hashing 10.0.10` 与 `System.Numerics.Tensors 10.0.10` 作为 package 的传递依赖进入 resolved graph，不在 Couplet adapter 重复直接引用。
+5. capability handshake 报告 package/assembly version、informational commit、trim/AOT 元数据、public API 联调状态、release level 和阻塞 gap。存在 public type 不等于 Couplet 可以宣称 Preview/Beta/Production。
+6. 所有 Couplet 生产项目启用 trim/AOT analyzer，并关闭反射型 `System.Text.Json`；声明 AOT 的 executable 必须实际 publish/run 且保持 0 个 IL/AOT warning。
+7. MCP Server 可以提供真实只读 stdio 协议和 typed schema，但 C1-C3 工具在能力未就绪时必须返回结构化 unavailable 错误，不建立 fallback。
 
-## 固定 package 迁移门禁
+## 迁移验证
 
-SonnetDB 发布包含当前 Graph public API 的新 `SonnetDB.Core` 后，必须在同一依赖迁移交付中：
-
-1. 把 adapter 改为固定 `PackageReference`，版本只在集中版本文件出现一次，并重新生成 lock files。
-2. 删除源码提交校验、外部 restore 隔离和源码构建输出重定向。
-3. 运行相同的 public Graph API 编译测试、capability/version 报告测试、Release build 和逐 executable trim/AOT publish。
-4. 验证 package 的依赖许可证、resolved graph、程序集 commit/version 与新发布说明一致。
-5. 在迁移完成前，不发布 Couplet 二进制或 NuGet 包，也不允许 CI 跟随 SonnetDB `main`。
+- 官方 package 的 id/version/content hash/informational commit 由 `contracts/c0-handshake.v1.json`、lock file 和自动化测试共同锁定。
+- 依赖图测试保证只有 `Couplet.Infrastructure.SonnetDb` 直接引用 `SonnetDB.Core`，SonnetDB 不引用 Couplet。
+- Release build、35 个测试、CLI/MCP smoke 和三个 win-x64 Native AOT publish/run 是迁移证据。
+- 本机曾存在同版本的本地 package cache；C0 使用隔离的官方源缓存生成 lock file，不修改用户全局 NuGet cache。CI 只按 lock file 使用官方源内容。
 
 ## 结果
 
-- Couplet 当前能针对真实 Graph public API 建立单向编译边界，且 SonnetDB 源码不被复制或修改。
-- 默认本地构建依赖固定位置的相邻仓库，CI 依赖固定提交的独立 checkout；因此 Couplet 尚不能作为独立源码包发布。
-- 当前 AOT PASS 不覆盖未来 parser、MCP SDK、workspace/indexer 或 provider 依赖；引入这些依赖时必须更新 CPL-007 矩阵。
+- Couplet 已恢复为可独立 checkout/restore/build 的默认模式，初始临时源码决策终止。
+- 固定 package 迁移本身不表示索引、Graph Preview 或独立产品发布 gate 已通过；CG-001、CG-002 和 CG-005 继续阻塞对应阶段。
+- 当前 AOT PASS 覆盖 C0 DTO、schema/evidence runner、stdio MCP 和 capability handshake，不覆盖未来 parser、真实数据库/indexer、provider 或安装包；引入这些边界时必须更新 CPL-007 矩阵。

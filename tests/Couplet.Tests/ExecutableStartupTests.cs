@@ -5,7 +5,7 @@ namespace Couplet.Tests;
 public sealed class ExecutableStartupTests
 {
     [Fact]
-    public async Task RunAsync_CliWithoutArguments_ReportsUnavailableCapabilities()
+    public async Task RunAsync_CliWithoutArguments_ReportsC0Capabilities()
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
@@ -24,7 +24,8 @@ public sealed class ExecutableStartupTests
         Assert.Equal("cpl-007.capabilities.v1", root.GetProperty("schema_version").GetString());
         Assert.Equal("cli", root.GetProperty("component").GetString());
         Assert.Equal("capability_unavailable", root.GetProperty("overall_state").GetString());
-        Assert.Equal("source_project_reference", root.GetProperty("sonnet_db_core").GetProperty("mode").GetString());
+        Assert.Equal("fixed_package", root.GetProperty("sonnet_db_core").GetProperty("mode").GetString());
+        Assert.Equal("available", root.GetProperty("sonnet_db_core").GetProperty("state").GetString());
         Assert.True(root.GetProperty("sonnet_db_core").GetProperty("graph_api_present").GetBoolean());
     }
 
@@ -70,7 +71,7 @@ public sealed class ExecutableStartupTests
     }
 
     [Fact]
-    public async Task RunAsync_McpServeCommand_ReportsCapabilityUnavailable()
+    public async Task RunAsync_McpServeWithoutWorkspace_ReportsInvalidRequest()
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
@@ -81,13 +82,12 @@ public sealed class ExecutableStartupTests
             error,
             CancellationToken.None);
 
-        Assert.Equal(2, exitCode);
+        Assert.Equal(64, exitCode);
         Assert.Equal(string.Empty, output.ToString());
 
         using JsonDocument document = JsonDocument.Parse(error.ToString());
         JsonElement root = document.RootElement;
-        Assert.Equal("capability_unavailable", root.GetProperty("code").GetString());
-        Assert.Equal("mcp_server", root.GetProperty("component").GetString());
-        Assert.Equal("cpl_006_not_implemented", root.GetProperty("reason").GetString());
+        Assert.Equal("invalid_request", root.GetProperty("code").GetString());
+        Assert.Equal("explicit_workspace_required", root.GetProperty("reason").GetString());
     }
 }

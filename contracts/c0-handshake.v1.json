@@ -1,0 +1,34 @@
+{
+  "schema_version": "couplet.c0_handshake.v1",
+  "recorded_at_utc": "2026-08-25T00:00:00Z",
+  "couplet_contracts": {
+    "code_graph": "couplet.code_graph.v1",
+    "generation": "couplet.generation.v1",
+    "sonnetdb_handshake": "couplet.sonnetdb_handshake.v1",
+    "mcp": "couplet.mcp.v1",
+    "security": "couplet.security.v1",
+    "fixture_manifest": "couplet.fixture_manifest.v1",
+    "golden_answers": "couplet.golden_answers.v1",
+    "agent_eval": "couplet.agent_eval.v1",
+    "c0_evidence": "couplet.c0_evidence.v1"
+  },
+  "sonnetdb": {
+    "package": "SonnetDB.Core",
+    "version": "3.1.0",
+    "package_content_hash": "P89D121WOTVXDrxMlz/bP+jERu3NpBdTlkyh6sEjZkN0QYR3nDcNGW4Oj579n684/2y1ui6vi/6M/F5CAa9m9Q==",
+    "informational_commit": "10ec6a44ae1c6fdfa2b3a98c40b08a9dbb6acb60",
+    "m40_workload_contract": "#341",
+    "m40_workload_contract_state": "frozen"
+  },
+  "fixtures": {
+    "manifest_sha256": "a428c97b39ee2d754b98e851c9dbba2275668aa681a2022f0806a789328b32be",
+    "golden_answers_sha256": "521e2c1901283b9c71c1595488e293ab079d7b1d873cc7a5654c14cd1995bdf7",
+    "agent_eval_manifest_sha256": "b90922977ea1ed152976de29f9bee8c5d3c4cdf81cb2cb937f57feac839e25ed"
+  },
+  "release_boundary": {
+    "c0_contracts": "complete",
+    "index_capabilities": "unavailable",
+    "native_graph_release_level": "unavailable",
+    "blocking_gaps": ["CG-001", "CG-002", "CG-005"]
+  }
+}

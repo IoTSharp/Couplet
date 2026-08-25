@@ -33,6 +33,6 @@ SonnetDB 负责通用 KV/Document/FullText/Vector/Native Graph/Hybrid Search、�
 
 仓库许可证由维护者另行决定；本 ADR 不授权复制 SonnetDB 的许可证或版权元数据。
 
-## 临时实现说明
+## 实现状态
 
-截至 2026-08-24，已发布的 `SonnetDB.Core 3.0.1` 不含公开 Graph API。ADR 0004 允许 CPL-007 在不改变依赖方向的前提下，临时固定引用相邻 SonnetDB 仓库的指定提交；该模式不能用于 Couplet 独立发布。包含所需公开 API 的新 package 发布后，本 ADR 第 4 条重新成为唯一正式构建方式。
+2026-08-25，CPL-007 已切换到包含公开 Graph API 的固定 `SonnetDB.Core 3.1.0` package 和 lock file，默认构建不再依赖相邻源码仓库。本 ADR 第 4 条已恢复为唯一正式构建方式；本地跨仓联调仍只能使用不提交的显式 opt-in 配置。

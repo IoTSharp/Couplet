@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://couplet.dev/contracts/security/v1/policy.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "workspace_allowlist", "ignore_patterns", "deny_patterns", "provider", "lifecycle", "log_relative_paths"],
+  "properties": {
+    "schema_version": { "const": "couplet.security.v1" },
+    "workspace_allowlist": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "ignore_patterns": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "deny_patterns": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "provider": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "allowed_fields", "user_opt_in"],
+      "properties": { "mode": { "enum": ["LocalOnly", "ExplicitOnline"] }, "provider_id": { "type": ["string", "null"] }, "model_id": { "type": ["string", "null"] }, "model_version": { "type": ["string", "null"] }, "allowed_fields": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }, "user_opt_in": { "type": "boolean" } }
+    },
+    "lifecycle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["retired_generation_retention", "log_retention", "provider_cache_retention", "delete_index_on_workspace_removal"],
+      "properties": { "retired_generation_retention": { "type": "string" }, "log_retention": { "type": "string" }, "provider_cache_retention": { "type": "string" }, "delete_index_on_workspace_removal": { "type": "boolean" } }
+    },
+    "log_relative_paths": { "type": "boolean" }
+  }
+}

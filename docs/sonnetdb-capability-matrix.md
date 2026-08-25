@@ -27,15 +27,16 @@ CPL-003/CPL-007 实现启动 handshake，至少交换：
 
 Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自动可用；能力未达到路线 gate 时返回 `capability_unavailable`。
 
-### CPL-007 当前实现状态
+### C0 当前实现状态
 
-- NuGet `SonnetDB.Core 3.0.1` 的 `net10.0` 程序集声明 trim/AOT 兼容，但没有公开 `SonnetDB.Graphs` / `GraphStore` 类型，因此不能作为 Couplet 图能力基线。
-- 当前只固定引用 SonnetDB 源码提交 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70`；构建验证提交和公开 `GraphStore` 类型，但不据此把任何产品 capability 标为可用。
-- capability handshake 尚未实现，所有存储、索引和 MCP 产品能力继续返回 `capability_unavailable`。新 Core 包发布后必须按 ADR 0004 的迁移门禁切回固定 package。
+- 固定 `SonnetDB.Core 3.1.0` 官方 package 和 content hash，公开 `GraphStore`、KV snapshot、Document、FullText、Vector、Graph path budget 与 diagnostics API 可用于联调。
+- `couplet.sonnetdb_handshake.v1` 分开报告 `integration_state` 与 `release_level`；public API 存在时前者可为 available，后者在联合门禁通过前仍为 unavailable。
+- `generation.atomic_publish` 和 `hybrid.shared_plan` 尚无已验证的 Couplet public 接线，分别由 CG-005、CG-002 阻塞。
+- 八个 MCP schema 和 stdio 协议已就绪，但索引/图/混合工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
 
 ## 变更规则
 
 - SonnetDB public contract 只能按兼容策略扩展；Couplet 固定 package version，不跟随浮动 main。
-- 本地 opt-in `ProjectReference` 必须通过与固定 package 相同的 compatibility tests。
+- 本地 opt-in `ProjectReference` 不进入默认仓库配置，且必须通过与固定 package 相同的 compatibility tests。
 - 新增 Core 缺口先登记 [Capability Gap Catalog](capability-gaps.md)，再在本表加入 owner/编号；关闭需要 Core 回归、Couplet journey 和固定硬件证据。
 - `#352/#359/#367` 是双方联合退出门禁，不是禁止 Couplet 针对前序 public API 开发/联调的条件。

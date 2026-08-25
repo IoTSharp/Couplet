@@ -1,4 +1,4 @@
-name: CPL-007 build
+name: C0 build
 
 on:
   push:
@@ -15,13 +15,6 @@ jobs:
       - name: Check out Couplet
         uses: actions/checkout@v4
 
-      - name: Check out pinned SonnetDB source
-        uses: actions/checkout@v4
-        with:
-          repository: IoTSharp/SonnetDB
-          ref: a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70
-          path: SonnetDB
-
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v5
         with:
@@ -29,12 +22,39 @@ jobs:
 
       - name: Restore locked dependencies
         shell: pwsh
-        run: dotnet restore Couplet.slnx --locked-mode -p:SonnetDbSourceRoot='${{ github.workspace }}\SonnetDB'
+        run: dotnet restore Couplet.slnx --locked-mode
 
       - name: Build Release with analyzers
         shell: pwsh
-        run: dotnet build Couplet.slnx --configuration Release --no-restore -p:SonnetDbSourceRoot='${{ github.workspace }}\SonnetDB'
+        run: dotnet build Couplet.slnx --configuration Release --no-restore
 
-      - name: Run CPL-007 tests
+      - name: Run C0 tests
         shell: pwsh
         run: dotnet test tests/Couplet.Tests/Couplet.Tests.csproj --configuration Release --no-build --no-restore
+
+      - name: Generate C0 contract evidence
+        shell: pwsh
+        run: dotnet run --project src/Couplet.Cli --configuration Release --no-build -- c0-evidence --repository . --commit '${{ github.sha }}'
+
+      - name: Publish Native AOT executables
+        shell: pwsh
+        run: |
+          $projects = @{
+            cli = 'src/Couplet.Cli/Couplet.Cli.csproj'
+            daemon = 'src/Couplet.Daemon/Couplet.Daemon.csproj'
+            mcp = 'src/Couplet.McpServer/Couplet.McpServer.csproj'
+          }
+          foreach ($name in $projects.Keys) {
+            dotnet publish $projects[$name] --configuration Release --runtime win-x64 --output "artifacts/publish/$name" -p:CoupletPublishAot=true
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Smoke Native AOT executables
+        shell: pwsh
+        run: |
+          & artifacts/publish/cli/Couplet.Cli.exe c0-evidence --repository . --commit '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & artifacts/publish/daemon/Couplet.Daemon.exe version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' |
+            & artifacts/publish/mcp/Couplet.McpServer.exe serve --workspace .

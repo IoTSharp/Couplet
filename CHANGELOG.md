@@ -13,10 +13,15 @@
 - 增加文档基线 CI 和本地路线校验脚本。
 - 增加 .NET 10 `.slnx`，分离 Core、Application、SonnetDB adapter、CLI、daemon 与 MCP Server 进程边界，并提供版本、能力报告和可取消 daemon 生命周期（CPL-007）。
 - 增加 source-generated JSON、trim/AOT analyzer、依赖边界与启动生命周期自动化测试，以及逐 executable/worker 发布能力矩阵（CPL-007）。
+- 冻结 `couplet.code_graph.v1` stable ID、provenance、confidence、generation 发布与删除合同，并增加 JSON Schema 和不变量测试（CPL-002）。
+- 实现 `couplet.sonnetdb_handshake.v1`，分离 public API 联调状态、发布等级与 blocking gap（CPL-003）。
+- 增加 Small/Medium/Large 多语言 fixture、golden answers、确定性生成器、C0 benchmark/evidence runner 和 Codex/Claude Code paired eval runner（CPL-004）。
+- 增加本地优先安全、ignore/deny、显式在线 provider 与数据生命周期合同（CPL-005）。
+- 实现八个 typed、只读 MCP v1 schema，以及 stdio initialize、schema discovery、预算/取消、HMAC cursor、稳定错误和 unavailable tool call（CPL-006）。
 
 ### Changed
 
-- `SonnetDB.Core 3.0.1` 尚无公开 Graph API；CPL-007 临时固定引用 SonnetDB 提交 `a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70`，并在新包发布前阻塞 Couplet 独立发布。
+- 默认依赖从临时 SonnetDB 源码引用切换为官方 `SonnetDB.Core 3.1.0` 固定 package 和 content hash；Couplet 可独立 checkout 构建，但产品发布仍受 C1-C4 功能门禁约束。
 
 ### Fixed
 

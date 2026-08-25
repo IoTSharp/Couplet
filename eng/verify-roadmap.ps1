@@ -18,7 +18,17 @@ $requiredFiles = @(
     'ROADMAP.md',
     'AGENTS.md',
     'CHANGELOG.md',
+    'contracts/c0-handshake.v1.json',
+    'contracts/code-graph/v1/schema.json',
+    'contracts/mcp/v1/schema-catalog.json',
+    'contracts/security/v1/policy.schema.json',
+    'fixtures/c0/manifest.v1.json',
+    'fixtures/c0/golden-answers.v1.json',
+    'fixtures/c0/agent-eval-manifest.v1.json',
     'docs/architecture.md',
+    'docs/code-graph-v1-contract.md',
+    'docs/security-and-data-lifecycle.md',
+    'docs/c0-evidence.md',
     'docs/mcp-v1-contract.md',
     'docs/golden-journeys.md',
     'docs/quality-gates.md',
@@ -69,7 +79,9 @@ if (Test-Path -LiteralPath $roadmapPath -PathType Leaf)
 }
 
 $markdownFiles = Get-ChildItem -LiteralPath $repositoryRoot -Filter '*.md' -File -Recurse |
-    Where-Object { $_.FullName -notlike '*\.git\*' }
+    Where-Object {
+        $_.FullName -notmatch '[\\/](\.git|artifacts|bin|obj)[\\/]'
+    }
 $linkPattern = [regex]'\[[^\]]+\]\((?<target>[^)]+)\)'
 
 foreach ($markdownFile in $markdownFiles)

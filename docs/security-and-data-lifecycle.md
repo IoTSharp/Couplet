@@ -1,0 +1,23 @@
+# 安全、隐私与数据生命周期合同
+
+## 默认边界
+
+安全合同版本为 `couplet.security.v1`，机器可读 schema 位于 [`contracts/security/v1/policy.schema.json`](../contracts/security/v1/policy.schema.json)。默认模式为 `LocalOnly`：仓库正文、prompt、凭证和完整绝对路径不发送到外部服务，也不进入日志、trace 或 eval artifact。
+
+- MCP Server 必须用 `--workspace` 显式绑定存在的目录，不从当前目录猜测工作区。
+- workspace allowlist 在读取文件前校验；所有公开路径为 workspace-relative path 或 stable ID。
+- deny 规则优先于 include/ignore；symlink 解析后的目标仍必须位于允许的 workspace 边界内。
+- 密钥、`.env`、凭证、构建产物、索引数据库和用户排除内容不得进入任何派生模型。
+- 日志默认只记录工具、版本、correlation ID、有界计数、耗时和原因码。
+
+## Provider
+
+在线 provider 只能使用 `ExplicitOnline`，并同时满足：`user_opt_in=true`、固定 provider/model/version，以及非空发送字段 allowlist。缺少任一项即拒绝策略；请求显式选择未配置 provider 时返回 `provider_unavailable`，不会回退到另一个 provider。
+
+provider cache identity 必须包含 provider、model、version、content hash 和允许字段集合。deny/ignore 内容不能因为已有 cache 而重新可见。
+
+## 生命周期
+
+策略分别记录 retired generation、日志和 provider cache 的保留时间。workspace 移除时是否删除本地索引必须显式配置；清理操作不能删除 active generation 或仍有 query lease 的 retired generation。
+
+C0 自动化覆盖本地默认策略、在线 provider 未授权、路径绑定和稳定错误。C1/C3 在真实文件发现、symlink、ignore/deny 和 provider 接线后继续执行内容不泄漏与断网测试。

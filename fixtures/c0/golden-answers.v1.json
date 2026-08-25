@@ -1,0 +1,14 @@
+{
+  "schema_version": "couplet.golden_answers.v1",
+  "fixture_manifest_id": "couplet-c0-multilanguage-v1",
+  "answers": [
+    { "id": "small-locate-entry", "scale": "small", "tool": "code_search", "query_id": "locate-entry", "required_symbols": ["CoupletFixture.Generated.Unit000000.Method0001(System.Int32)"], "required_relations": [], "required_spans": ["csharp/unit-000000.cs:2"] },
+    { "id": "small-symbol", "scale": "small", "tool": "symbol_get", "query_id": "same-name-resolution", "required_symbols": ["CoupletFixture.Generated.Unit000001.Method0001(System.Int32)"], "required_relations": [], "required_spans": ["csharp/unit-000001.cs:2"] },
+    { "id": "small-relations", "scale": "small", "tool": "symbol_relations", "query_id": "bounded-calls", "required_symbols": ["CoupletFixture.Generated.Unit000000.Method0002(System.Int32)"], "required_relations": ["Calls:Method0002->Method0001"], "required_spans": ["csharp/unit-000000.cs:3"] },
+    { "id": "medium-path", "scale": "medium", "tool": "dependency_path", "query_id": "deep-chain", "required_symbols": ["Unit000000", "Unit000010"], "required_relations": ["DependsOn:Unit000000->Unit000010"], "required_spans": ["typescript/unit-000010.ts:1"] },
+    { "id": "medium-impact", "scale": "medium", "tool": "impact_analyze", "query_id": "candidate-tests", "required_symbols": ["Fixture.Tests.Unit000000Tests"], "required_relations": ["Covers:Unit000000Tests->Unit000000"], "required_spans": ["csharp/unit-000000.cs:1"] },
+    { "id": "medium-change", "scale": "medium", "tool": "change_context", "query_id": "rename-delete", "required_symbols": ["CoupletFixture.Generated.Unit000020"], "required_relations": ["Defines:unit-000020.cs->Unit000020"], "required_spans": ["csharp/unit-000020.cs:1"] },
+    { "id": "large-status", "scale": "large", "tool": "workspace_status", "query_id": "large-counts", "required_symbols": [], "required_relations": [], "required_spans": [] },
+    { "id": "large-context", "scale": "large", "tool": "context_pack", "query_id": "large-budgeted-context", "required_symbols": ["CoupletFixture.Generated.Unit000000.Method0001(System.Int32)"], "required_relations": ["Calls:Method0002->Method0001"], "required_spans": ["csharp/unit-000000.cs:2"] }
+  ]
+}

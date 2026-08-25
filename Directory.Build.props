@@ -10,6 +10,7 @@
     <VersionPrefix>0.1.0</VersionPrefix>
     <IsPackable>false</IsPackable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)artifacts\nuget</RestorePackagesPath>
     <NuGetLockFilePath Condition="'$(CoupletPublishAot)' == 'true'">$(MSBuildProjectDirectory)\obj\packages.aot.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
   </PropertyGroup>
 

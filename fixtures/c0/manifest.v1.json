@@ -1,0 +1,55 @@
+{
+  "schema_version": "couplet.fixture_manifest.v1",
+  "id": "couplet-c0-multilanguage-v1",
+  "generator_version": "couplet-fixture-v1",
+  "license": "deterministically generated; no third-party source corpus",
+  "scales": [
+    {
+      "id": "small",
+      "target_lines_of_code": 100000,
+      "minimum_symbols": 10000,
+      "minimum_relations": 100000,
+      "seed": 104729,
+      "languages": [
+        { "family": "csharp", "language": "csharp", "share": 0.5, "semantic_tier": "fixture_contract" },
+        { "family": "typescript_javascript", "language": "typescript", "share": 0.5, "semantic_tier": "fixture_contract" }
+      ]
+    },
+    {
+      "id": "medium",
+      "target_lines_of_code": 1000000,
+      "minimum_symbols": 100000,
+      "minimum_relations": 1000000,
+      "seed": 130363,
+      "languages": [
+        { "family": "csharp", "language": "csharp", "share": 0.5, "semantic_tier": "fixture_contract" },
+        { "family": "typescript_javascript", "language": "typescript", "share": 0.5, "semantic_tier": "fixture_contract" }
+      ]
+    },
+    {
+      "id": "large",
+      "target_lines_of_code": 10000000,
+      "minimum_symbols": 1000000,
+      "minimum_relations": 10000000,
+      "seed": 155921,
+      "languages": [
+        { "family": "csharp", "language": "csharp", "share": 0.5, "semantic_tier": "fixture_contract" },
+        { "family": "typescript_javascript", "language": "typescript", "share": 0.5, "semantic_tier": "fixture_contract" }
+      ]
+    }
+  ],
+  "required_scenarios": [
+    "same_name_symbols",
+    "overloads_and_generics",
+    "dynamic_calls",
+    "generated_and_ignored_files",
+    "symlink_escape",
+    "binary_and_large_files",
+    "unicode_paths",
+    "rename_and_delete",
+    "dirty_worktree",
+    "deep_dependency_chain",
+    "cycle",
+    "supernode"
+  ]
+}

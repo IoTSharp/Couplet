@@ -5,34 +5,39 @@ namespace Couplet.Tests;
 
 public sealed class SonnetDbDependencyTests
 {
-    private const string _expectedCommit = "a0fefe15c4ea4d3a5f2a4a2c4f69d6930b9c6c70";
-
     [Fact]
-    public void Probe_CurrentSourceDependency_ReportsGraphApiButUnavailableHandshake()
+    public void Probe_FixedPackage_ReportsGraphApiAndVersionedHandshake()
     {
         var probe = new SonnetDbCapabilityProbe();
 
         var report = probe.Probe();
 
-        Assert.Equal("source_project_reference", report.Mode);
-        Assert.Equal(_expectedCommit, report.ResolvedCommit);
-        Assert.Contains(_expectedCommit, report.ResolvedVersion, StringComparison.Ordinal);
+        Assert.Equal("fixed_package", report.Mode);
+        Assert.Equal("3.1.0", report.Requested);
+        Assert.NotEqual("unknown", report.ResolvedCommit);
+        Assert.Contains(report.ResolvedCommit, report.ResolvedVersion, StringComparison.Ordinal);
         Assert.True(report.GraphApiPresent);
         Assert.True(report.DeclaresTrimCompatible);
         Assert.True(report.DeclaresAotCompatible);
-        Assert.Equal("unavailable", report.State);
-        Assert.Equal("sonnetdb_capability_handshake_not_implemented", report.Reason);
+        Assert.Equal("couplet.sonnetdb_handshake.v1", report.HandshakeVersion);
+        Assert.Equal("available", report.State);
+        Assert.Equal("fixed_package_verified", report.Reason);
+        Assert.Contains(report.Capabilities, capability =>
+            capability.Id == "graph.native"
+            && capability.IntegrationState == "available"
+            && capability.ReleaseLevel == "unavailable"
+            && capability.BlockingGaps.Contains("CG-001"));
     }
 
     [Fact]
-    public void ProjectGraph_SonnetDbReference_IsOneWayAndSourcePinned()
+    public void ProjectGraph_SonnetDbReference_IsOneWayAndPackagePinned()
     {
         string root = FindRepositoryRoot();
         string[] projectFiles = Directory.GetFiles(Path.Combine(root, "src"), "*.csproj", SearchOption.AllDirectories);
 
         var sonnetReferences = projectFiles
-            .SelectMany(project => ReadIncludes(project, "ProjectReference")
-                .Where(include => include.Contains("SonnetDbSourceProject", StringComparison.Ordinal))
+            .SelectMany(project => ReadIncludes(project, "PackageReference")
+                .Where(include => string.Equals(include, "SonnetDB.Core", StringComparison.OrdinalIgnoreCase))
                 .Select(include => (Project: project, Include: include)))
             .ToArray();
 
@@ -41,21 +46,13 @@ public sealed class SonnetDbDependencyTests
             Path.Combine("src", "Couplet.Infrastructure.SonnetDb", "Couplet.Infrastructure.SonnetDb.csproj"),
             sonnetReferences[0].Project,
             StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("$(SonnetDbSourceProject)", sonnetReferences[0].Include);
-        Assert.DoesNotContain(
-            projectFiles.SelectMany(project => ReadIncludes(project, "PackageReference")),
-            include => string.Equals(include, "SonnetDB.Core", StringComparison.OrdinalIgnoreCase));
-
-        XDocument pinDocument = XDocument.Load(Path.Combine(root, "eng", "SonnetDB.props"));
-        string? pinnedCommit = pinDocument.Descendants("SonnetDbSourceCommit").Single().Value;
-        Assert.Equal(_expectedCommit, pinnedCommit);
+        Assert.Equal("SonnetDB.Core", sonnetReferences[0].Include);
 
         string workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"));
-        Assert.Contains(_expectedCommit, workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("repository: IoTSharp/SonnetDB", workflow, StringComparison.Ordinal);
 
         XDocument packages = XDocument.Load(Path.Combine(root, "Directory.Packages.props"));
-        Assert.Equal("10.0.10", PackageVersion(packages, "System.IO.Hashing"));
-        Assert.Equal("10.0.10", PackageVersion(packages, "System.Numerics.Tensors"));
+        Assert.Equal("3.1.0", PackageVersion(packages, "SonnetDB.Core"));
     }
 
     [Fact]
@@ -70,6 +67,10 @@ public sealed class SonnetDbDependencyTests
         Assert.Equal("true", PropertyValue(buildPolicy, "IsTrimmable"));
         Assert.Equal("true", PropertyValue(buildPolicy, "IsAotCompatible"));
         Assert.Equal("false", PropertyValue(buildPolicy, "JsonSerializerIsReflectionEnabledByDefault"));
+        Assert.EndsWith(
+            Path.Combine("artifacts", "nuget"),
+            PropertyValue(buildPolicy, "RestorePackagesPath").Replace("$(MSBuildThisFileDirectory)", root + Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
 
         string[] sourceFiles = Directory.GetFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories);
         Assert.DoesNotContain(sourceFiles, file => File.ReadAllText(file).Contains("unsafe", StringComparison.Ordinal));

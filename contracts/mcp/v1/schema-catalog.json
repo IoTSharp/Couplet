@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://couplet.dev/contracts/mcp/v1/schema-catalog.json",
+  "schema_version": "couplet.mcp.v1",
+  "tools": [
+    {
+      "name": "workspace_status",
+      "description": "Return the bound workspace, index freshness, counts, capabilities, and blocking gaps without triggering a rebuild.",
+      "read_only": true,
+      "stage": "c1",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["budget"],
+        "properties": {
+          "protocol_version": { "const": "1" },
+          "workspace_id": { "type": ["string", "null"] },
+          "revision_selector": { "$ref": "#/$defs/revisionSelector" },
+          "budget": { "$ref": "#/$defs/budget" },
+          "cursor": { "type": ["string", "null"] }
+        },
+        "$defs": {
+          "revisionSelector": { "type": ["object", "null"], "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "enum": ["source", "index"] }, "value": { "type": "string", "minLength": 1 } } },
+          "budget": { "type": "object", "additionalProperties": false, "required": ["max_items", "max_tokens", "max_bytes", "deadline_ms"], "properties": { "max_items": { "type": "integer", "minimum": 1, "maximum": 1000 }, "max_tokens": { "type": "integer", "minimum": 1, "maximum": 65536 }, "max_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }, "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 120000 } } }
+        }
+      },
+      "outputSchema": { "$ref": "#/$defs/workspaceStatusResponse" }
+    },
+    {
+      "name": "code_search",
+      "description": "Search code by exact, full-text, vector, or hybrid access path with stable ordering and evidence.",
+      "read_only": true,
+      "stage": "c1_c3",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["budget", "query", "mode"],
+        "properties": {
+          "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defs/revisionSelector" }, "budget": { "$ref": "#/$defs/budget" }, "cursor": { "type": ["string", "null"] },
+          "query": { "type": "string", "minLength": 1 }, "mode": { "enum": ["exact", "fulltext", "vector", "hybrid"] }, "path": { "type": ["string", "null"] }, "language": { "type": ["string", "null"] }, "kind": { "type": ["string", "null"] }, "provider_id": { "type": ["string", "null"] }
+        },
+        "$defs": { "revisionSelector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" } }
+      },
+      "outputSchema": { "$ref": "#/$defs/codeSearchResponse" }
+    },
+    {
+      "name": "symbol_get",
+      "description": "Resolve one symbol by stable ID or unambiguous qualified identity.",
+      "read_only": true,
+      "stage": "c1",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "symbol_id": { "type": ["string", "null"] }, "qualified_identity": { "type": ["string", "null"] }, "language": { "type": ["string", "null"] } },
+        "oneOf": [ { "required": ["symbol_id"] }, { "required": ["qualified_identity"] } ]
+      },
+      "outputSchema": { "$ref": "#/$defs/symbolGetResponse" }
+    },
+    {
+      "name": "symbol_relations",
+      "description": "Read bounded native-graph relations around a symbol with per-edge confidence and evidence.",
+      "read_only": true,
+      "stage": "c2",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget", "symbol_id", "relation_kinds", "direction", "max_depth", "max_frontier"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "symbol_id": { "type": "string", "minLength": 1 }, "relation_kinds": { "$ref": "#/$defsCommon/relationKinds" }, "direction": { "enum": ["outgoing", "incoming", "both"] }, "max_depth": { "type": "integer", "minimum": 1 }, "max_frontier": { "type": "integer", "minimum": 1 } }
+      },
+      "outputSchema": { "$ref": "#/$defs/symbolRelationsResponse" }
+    },
+    {
+      "name": "dependency_path",
+      "description": "Find bounded native-graph dependency paths between two entities.",
+      "read_only": true,
+      "stage": "c2",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget", "from_id", "to_id", "relation_kinds", "direction", "max_depth", "max_paths", "max_frontier"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "from_id": { "type": "string", "minLength": 1 }, "to_id": { "type": "string", "minLength": 1 }, "relation_kinds": { "$ref": "#/$defsCommon/relationKinds" }, "direction": { "enum": ["outgoing", "incoming", "both"] }, "max_depth": { "type": "integer", "minimum": 1 }, "max_paths": { "type": "integer", "minimum": 1 }, "max_frontier": { "type": "integer", "minimum": 1 } }
+      },
+      "outputSchema": { "$ref": "#/$defs/dependencyPathResponse" }
+    },
+    {
+      "name": "impact_analyze",
+      "description": "Explain direct and transitive impact, build targets, and candidate tests.",
+      "read_only": true,
+      "stage": "c2",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget", "files", "symbol_ids", "relation_kinds", "max_depth", "max_frontier", "include_tests", "include_build_targets"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "files": { "type": "array", "items": { "type": "string" } }, "symbol_ids": { "type": "array", "items": { "type": "string" } }, "relation_kinds": { "$ref": "#/$defsCommon/relationKinds" }, "max_depth": { "type": "integer", "minimum": 1 }, "max_frontier": { "type": "integer", "minimum": 1 }, "include_tests": { "type": "boolean" }, "include_build_targets": { "type": "boolean" } }
+      },
+      "outputSchema": { "$ref": "#/$defs/impactAnalyzeResponse" }
+    },
+    {
+      "name": "change_context",
+      "description": "Map Git revisions, working-tree changes, or explicit hunks to symbols, contracts, dependencies, and tests.",
+      "read_only": true,
+      "stage": "c2",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget", "include_working_tree", "hunks", "max_depth", "max_frontier"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "base_revision": { "type": ["string", "null"] }, "head_revision": { "type": ["string", "null"] }, "include_working_tree": { "type": "boolean" }, "hunks": { "type": "array", "items": { "$ref": "#/$defsCommon/diffHunk" } }, "max_depth": { "type": "integer", "minimum": 1 }, "max_frontier": { "type": "integer", "minimum": 1 } }
+      },
+      "outputSchema": { "$ref": "#/$defs/changeContextResponse" }
+    },
+    {
+      "name": "context_pack",
+      "description": "Select a deduplicated evidence-backed context pack within token, item, byte, and deadline budgets.",
+      "read_only": true,
+      "stage": "c3",
+      "inputSchema": {
+        "type": "object", "additionalProperties": false, "required": ["budget", "task", "retrieval_modes", "evidence_policy"],
+        "properties": { "protocol_version": { "const": "1" }, "workspace_id": { "type": ["string", "null"] }, "revision_selector": { "$ref": "#/$defsCommon/revisionSelector" }, "budget": { "$ref": "#/$defsCommon/budget" }, "cursor": { "type": ["string", "null"] }, "task": { "type": "string", "minLength": 1 }, "entry_symbol_id": { "type": ["string", "null"] }, "base_revision": { "type": ["string", "null"] }, "retrieval_modes": { "type": "array", "minItems": 1, "items": { "enum": ["exact", "fulltext", "vector", "graph", "hybrid"] } }, "evidence_policy": { "enum": ["required", "best_effort"] }, "provider_id": { "type": ["string", "null"] } }
+      },
+      "outputSchema": { "$ref": "#/$defs/contextPackResponse" }
+    }
+  ],
+  "$defsCommon": {
+    "revisionSelector": { "type": ["object", "null"], "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "enum": ["source", "index"] }, "value": { "type": "string", "minLength": 1 } } },
+    "budget": { "type": "object", "additionalProperties": false, "required": ["max_items", "max_tokens", "max_bytes", "deadline_ms"], "properties": { "max_items": { "type": "integer", "minimum": 1, "maximum": 1000 }, "max_tokens": { "type": "integer", "minimum": 1, "maximum": 65536 }, "max_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }, "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 120000 } } },
+    "relationKinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["Contains", "Defines", "References", "Calls", "Imports", "Inherits", "Implements", "Overrides", "DependsOn", "Builds", "Covers"] } },
+    "diffHunk": { "type": "object", "additionalProperties": false, "required": ["path", "old_start", "old_count", "new_start", "new_count"], "properties": { "path": { "type": "string" }, "old_start": { "type": "integer", "minimum": 0 }, "old_count": { "type": "integer", "minimum": 0 }, "new_start": { "type": "integer", "minimum": 0 }, "new_count": { "type": "integer", "minimum": 0 } } }
+  },
+  "$defs": {
+    "baseResponse": { "type": "object", "required": ["schema_version", "workspace_id", "source_revision", "index_revision", "freshness", "capabilities", "items", "evidence", "diagnostics", "truncated"], "properties": { "schema_version": { "const": "couplet.mcp.v1" }, "workspace_id": { "type": "string" }, "source_revision": { "type": "string" }, "index_revision": { "type": "string" }, "freshness": { "type": "object" }, "capabilities": { "type": "array" }, "items": { "type": "array" }, "evidence": { "type": "array" }, "diagnostics": { "type": "object" }, "truncated": { "type": "boolean" }, "truncation_reason": { "type": ["string", "null"] }, "next_cursor": { "type": ["string", "null"] } } },
+    "workspaceStatusResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["files", "symbols", "relations", "chunks", "blocking_gaps", "rebuild_required"] } } } } ] },
+    "codeSearchResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "display_name", "score", "score_parts", "evidence_ids"] } } } } ] },
+    "symbolGetResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "qualified_identity", "signature", "language", "confidence", "evidence_ids"] } } } } ] },
+    "symbolRelationsResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["relation_id", "kind", "source_id", "target_id", "depth", "confidence", "evidence_ids"] } } } } ] },
+    "dependencyPathResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["steps", "cost"] } } } } ] },
+    "impactAnalyzeResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["id", "kind", "impact_kind", "reason", "confidence", "evidence_ids"] } } } } ] },
+    "changeContextResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["kind", "id", "reason", "partial", "evidence_ids"] } } } } ] },
+    "contextPackResponse": { "allOf": [ { "$ref": "#/$defs/baseResponse" }, { "properties": { "items": { "type": "array", "items": { "type": "object", "required": ["section", "id", "content", "selection_reason", "tokens", "evidence_ids"] } } } } ] }
+  }
+}

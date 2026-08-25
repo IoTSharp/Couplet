@@ -2,4 +2,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Couplet.Core\Couplet.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\contracts\mcp\v1\schema-catalog.json"
+                      LogicalName="Couplet.Contracts.Mcp.v1.schema-catalog.json" />
+  </ItemGroup>
 </Project>
