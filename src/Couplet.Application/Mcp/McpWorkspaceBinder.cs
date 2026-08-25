@@ -38,8 +38,8 @@ public static class McpWorkspaceBinder
     /// <returns>八个工具所需能力的稳定状态。</returns>
     public static IReadOnlyList<McpCapability> CreateCapabilities() =>
     [
-        Capability("exact", "unavailable", "c1_not_implemented"),
-        Capability("fulltext", "unavailable", "c1_not_implemented"),
+        Capability("exact", "unavailable", "generation_publish_blocked"),
+        Capability("fulltext", "unavailable", "generation_publish_blocked"),
         Capability("vector", "unavailable", "c3_not_implemented"),
         Capability("graph", "unavailable", "c2_release_gate_not_passed"),
         Capability("hybrid", "unavailable", "c3_not_implemented"),

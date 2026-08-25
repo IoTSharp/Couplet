@@ -1,9 +1,11 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Couplet.Application.Capabilities;
 using Couplet.Core.Capabilities;
 using Couplet.Core.Contracts;
 using SonnetDB.Documents;
 using SonnetDB.Documents.Vector;
+using SonnetDB.Engine;
 using SonnetDB.FullText;
 using SonnetDB.Graphs;
 using SonnetDB.Kv;
@@ -40,10 +42,13 @@ public sealed class SonnetDbCapabilityProbe : ISonnetDbCapabilityProbe
             GraphApiPresent = typeof(GraphStore).FullName == "SonnetDB.Graphs.GraphStore",
             Capabilities =
             [
-                Available("database.lifecycle", "sonnetdb.embedded.v1", "c1_not_implemented", "CG-005"),
-                Available("kv.snapshot", typeof(KvReadSnapshot).FullName!, "c1_not_implemented", "CG-005"),
-                Available("document.collection", typeof(DocumentCollectionStore).FullName!, "c1_not_implemented", "CG-005"),
-                Available("fulltext.document", typeof(DocumentFullTextIndexStore).FullName!, "c1_not_implemented", "CG-005"),
+                Available("database.lifecycle", "sonnetdb.embedded.v1", "c1_staging_integrated", "CG-005"),
+                Available("kv.snapshot", typeof(KvReadSnapshot).FullName!, "c1_staging_integrated", "CG-005"),
+                RuntimeFeature.IsDynamicCodeSupported
+                    ? Available("database.background_maintenance", typeof(TsdbOptions).FullName!, "runtime_workers_available", "CG-005")
+                    : Unavailable("database.background_maintenance", typeof(TsdbOptions).FullName!, "native_aot_thread_interrupt_unsupported", "CG-006"),
+                Available("document.collection", typeof(DocumentCollectionStore).FullName!, "c1_staging_integrated", "CG-005"),
+                Available("fulltext.document", typeof(DocumentFullTextIndexStore).FullName!, "c1_staging_integrated", "CG-005"),
                 Available("vector.document", typeof(DocumentVectorIndexStore).FullName!, "c3_not_implemented", "CG-002"),
                 Available("graph.native", typeof(GraphStore).FullName!, "c2_release_gate_not_passed", "CG-001"),
                 Available("graph.path_budgets", typeof(GraphTraversalOptions).FullName!, "c2_release_gate_not_passed", "CG-001"),

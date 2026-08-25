@@ -47,7 +47,11 @@ public sealed class CapabilityReportService
                 Available("contracts.security_v1"),
                 Available("mcp.schema_v1"),
                 Available("evaluation.c0_runner"),
-                Unavailable("workspace.index", "c1_not_implemented"),
+                Available("workspace.discovery"),
+                Available("language.csharp.partial"),
+                Available("language.typescript_javascript.partial"),
+                Available("index.staging"),
+                Unavailable("workspace.index", "generation_publish_blocked"),
                 component == ComponentKind.McpServer
                     ? Available("mcp.protocol")
                     : Unavailable("mcp.protocol", "not_applicable"),

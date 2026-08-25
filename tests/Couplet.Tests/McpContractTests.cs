@@ -102,7 +102,7 @@ public sealed class McpContractTests
             CancellationToken.None);
 
         Assert.Equal(McpErrorCodes.CapabilityUnavailable, first.Error.Code);
-        Assert.Equal("c1_not_implemented", first.Error.Reason);
+        Assert.Equal("generation_publish_blocked", first.Error.Reason);
         Assert.Equal(first.Error.Code, second.Error.Code);
         Assert.Equal(first.Error.Reason, second.Error.Reason);
         Assert.Equal(first.Error.GapId, second.Error.GapId);

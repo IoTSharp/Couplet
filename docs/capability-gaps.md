@@ -18,9 +18,39 @@
 | CG-002 | FullText + Vector + Native Graph 的 shared typed hybrid plan 和实际访问路径尚未通过 | SonnetDB M40 `#353`-`#359`，关联 M35/M36 | Couplet C3 Beta 发布及后续 | known | 允许对目标 API 联调；不得产品层多路 merge/扩图，双方证据共同关闭 `#359` |
 | CG-003 | 生产图快照、维护、7 天长稳、Native AOT 与固定硬件发布证据尚未通过 | SonnetDB M40 `#360`-`#367` | Couplet C4/1.0 发布 | known | 与 `#360~#366` 并行取证；保持 Preview/Beta/未发布，双方证据共同关闭 `#367` |
 | CG-004 | C0 曾缺少可执行 typed MCP、fixture/eval runner 和固定 package | Couplet C0 | C0 合同门禁 | closed | 2026-08-25 由固定 package、八工具 schema、stdio smoke、35 个测试和 C0 evidence 关闭；索引能力属于 C1，继续 unavailable |
-| CG-005 | 跨模型 generation filter、active manifest 原子切换、query snapshot/lease、稳定 cursor、旧 generation 清理及 crash/reopen 合同尚未联调证明 | SonnetDB M40 `#343/#346` + Couplet CPL-002/CPL-013/CPL-015 | Couplet C1 发布及后续 | known | 可开发 parser/fixture 和 staging；未关闭前不宣称原子、可恢复的增量索引完成，也不引入第二提交日志 |
+| CG-005 | 固定 `SonnetDB.Core 3.1.0` 未暴露 Couplet 所需的跨模型 generation filter/active manifest 原子切换、query snapshot lease、稳定 cursor 和安全 retired generation 清理 public contract | SonnetDB M40 `#343/#346` + Couplet CPL-002/CPL-013/CPL-015 | Couplet C1 发布及后续 | active | Document/FullText staging、checkpoint/reopen 与访问路径可继续取证；未关闭前 MCP 不读取 staging，不宣称原子增量索引完成，也不引入第二提交日志 |
+| CG-006 | `SonnetDB.Core 3.1.0` 默认 compaction/retention/KV background workers 在 Native AOT dispose 时调用不受支持的 `Thread.Interrupt()` | SonnetDB Core lifecycle + Couplet CPL-007/CPL-015/CPL-043 | Native AOT 长期索引维护及 C1/C4 发布证据 | active | AOT staging 可通过公开 options 关闭相关 workers 并显式报告 limitation；不得吞掉 dispose 异常或宣称后台维护/长稳通过 |
 
 上述是已知前置能力，不是实测性能结论。首个 C0/C1 benchmark 产生后，任何未达 [质量与性能门禁](quality-gates.md)的路径必须新增独立 gap，不得只在日志或 PR 评论中记录。
+
+### CG-005：C1 generation 发布与查询租约
+
+- 状态：active
+- 首次稳定复现：2026-08-25 / C1 working tree based on `329519d`
+- Owner：SonnetDB M40 `#343/#346` public contract + Couplet CPL-013~015 integration
+- 阻塞阶段：C1 Correctness/Recovery、C1 Performance/Capacity，以及 C1 后续所有公开查询
+- Corpus：Couplet 自身工作区和自动化 C#/TypeScript 小型 fixture
+- 操作：构建 generation 独立 Document collection、path indexes 和 FullText index，批量写入后 checkpoint/reopen；随后尝试建立 active generation publication/query lease/cleanup 生命周期
+- 预期：跨模型派生状态以单一原子 active revision 发布，查询绑定 lease/cursor，retired generation 仅在租约归零后清理
+- 实际：固定 package 可完成 KV、Document、FullText staging 与 reopen，但 public API 中没有可由 Couplet 正确组合出的跨模型 publish/query lease/cleanup 合同
+- 最小复现：`Stage_WithCSharpAndTypeScript_PersistsVerifiedUnpublishedGenerationAcrossReopen`；CLI `index-stage` 报告 `published=false`、`blocking_gap=CG-005`
+- 禁止旁路：不得由 Couplet 增加第二提交日志、将 staging 暴露为 active、用不受租约保护的 collection 指针模拟发布，或在 MCP 中隐藏 revision 不连续
+- 关闭证据：SonnetDB public API/回归 commit、kill-before/after-publish 回归、cursor/lease/cleanup 回归、Couplet Medium/Large 固定硬件报告共同 PASS
+
+### CG-006：Native AOT 后台维护生命周期
+
+- 状态：active
+- 首次稳定复现：2026-08-25 / C1 working tree based on `329519d`
+- Owner：SonnetDB Core background worker lifecycle + Couplet CPL-007/CPL-015/CPL-043 integration
+- 阻塞阶段：C1 Native AOT 发布证据、C4 long-running maintenance/Production
+- Corpus：单文件 C# 临时工作区；win-x64 Native AOT `Couplet.Cli index-stage`
+- 环境：Windows win-x64、.NET SDK `10.0.400`、固定 `SonnetDB.Core 3.1.0`
+- 操作：使用默认 `TsdbOptions` open/stage/checkpoint/dispose `Tsdb`
+- 预期：staging 完成后数据库正常 dispose，后台 flush/compaction/retention/expirer/cleanup 有可取消的 AOT-safe shutdown
+- 实际：`KvExpirerWorker.Dispose()` 与 `CompactionWorker.Dispose()` 依次复现 `Thread.Interrupt()` 的 `PlatformNotSupportedException`；AOT profile 通过公开 options 关闭 background flush/compaction/retention/KV expirer-cleanup，保留使用 `CompleteAdding + Join` 的 flush pump 后 staging 与 dispose 可完成
+- 最小复现：发布 win-x64 Native AOT CLI 后执行 `index-stage --workspace <one-file-workspace> --database <empty-dir>`；默认 package 配置在退出时崩溃
+- 禁止旁路：不得吞掉 dispose 异常、跳过 `Tsdb.Dispose()`、把后台维护已关闭伪装为 Production，或以定期重启隐藏增长
+- 关闭证据：SonnetDB AOT-safe worker shutdown 回归、Couplet AOT staging/daemon reopen、compaction/retention/KV maintenance correctness 和 7 天增长报告共同 PASS
 
 ## Gap 模板
 

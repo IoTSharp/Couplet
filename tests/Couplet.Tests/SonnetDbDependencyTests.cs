@@ -27,6 +27,9 @@ public sealed class SonnetDbDependencyTests
             && capability.IntegrationState == "available"
             && capability.ReleaseLevel == "unavailable"
             && capability.BlockingGaps.Contains("CG-001"));
+        Assert.Contains(report.Capabilities, capability =>
+            capability.Id == "database.background_maintenance"
+            && capability.IntegrationState == "available");
     }
 
     [Fact]

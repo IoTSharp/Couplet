@@ -1,6 +1,11 @@
 using Couplet.Application.Capabilities;
 using Couplet.Application.Hosting;
+using Couplet.Application.Indexing;
+using Couplet.Application.Serialization;
+using Couplet.Application.Workspaces;
 using Couplet.Core.Capabilities;
+using Couplet.Core.Indexing;
+using Couplet.Core.Workspaces;
 
 namespace Couplet.Infrastructure.SonnetDb;
 
@@ -25,6 +30,15 @@ public static class CoupletRuntime
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        if (component == ComponentKind.Cli && arguments.Count > 0)
+        {
+            string command = arguments[0].Trim().ToLowerInvariant();
+            if (command is "workspace-scan" or "index-stage")
+            {
+                return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
+            }
+        }
+
         var probe = new SonnetDbCapabilityProbe();
         var reportService = new CapabilityReportService(probe);
         var runner = new ComponentRunner(reportService);
@@ -49,6 +63,15 @@ public static class CoupletRuntime
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        if (component == ComponentKind.Cli && arguments.Count > 0)
+        {
+            string command = arguments[0].Trim().ToLowerInvariant();
+            if (command is "workspace-scan" or "index-stage")
+            {
+                return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
+            }
+        }
+
         var probe = new SonnetDbCapabilityProbe();
         var reportService = new CapabilityReportService(probe);
         var runner = new ComponentRunner(reportService);
@@ -91,5 +114,113 @@ public static class CoupletRuntime
             Console.CancelKeyPress -= cancelHandler;
             AppDomain.CurrentDomain.ProcessExit -= processExitHandler;
         }
+    }
+
+    private static async Task<int> RunIndexCommandAsync(
+        string command,
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        string? workspacePath = Option(arguments, "--workspace");
+        if (workspacePath is null)
+        {
+            return await WriteIndexErrorAsync(error, "explicit_workspace_required").ConfigureAwait(false);
+        }
+
+        try
+        {
+            WorkspaceDiscoveryPolicy policy = CreatePolicy(arguments);
+            DiscoveredWorkspace workspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspacePath,
+                policy,
+                cancellationToken).ConfigureAwait(false);
+            if (command == "workspace-scan")
+            {
+                await output.WriteLineAsync(CoupletJsonSerializer.Serialize(workspace.Result)).ConfigureAwait(false);
+                return 0;
+            }
+
+            string? databasePath = Option(arguments, "--database");
+            if (databasePath is null)
+            {
+                return await WriteIndexErrorAsync(error, "explicit_database_required").ConfigureAwait(false);
+            }
+
+            WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
+                workspace,
+                previousIndexRevision: null,
+                cancellationToken).ConfigureAwait(false);
+            IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(previous: null, snapshot);
+            using var store = new SonnetDbIndexGenerationStore(databasePath);
+            IndexStageReport report = store.Stage(snapshot, plan, cancellationToken);
+            await output.WriteLineAsync(CoupletJsonSerializer.Serialize(report)).ConfigureAwait(false);
+            return report.Staged ? 0 : 1;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return await WriteIndexErrorAsync(error, "index_operation_cancelled").ConfigureAwait(false);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return await WriteIndexErrorAsync(error, "workspace_not_found").ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return await WriteIndexErrorAsync(error, "index_io_failed").ConfigureAwait(false);
+        }
+    }
+
+    private static WorkspaceDiscoveryPolicy CreatePolicy(IReadOnlyList<string> arguments)
+    {
+        WorkspaceDiscoveryPolicy defaults = WorkspaceDiscoveryService.DefaultPolicy;
+        return new WorkspaceDiscoveryPolicy
+        {
+            IgnorePatterns = defaults.IgnorePatterns.Concat(OptionValues(arguments, "--ignore")).ToArray(),
+            DenyPatterns = defaults.DenyPatterns.Concat(OptionValues(arguments, "--deny")).ToArray(),
+            GeneratedPatterns = defaults.GeneratedPatterns,
+            MaxSemanticFileBytes = defaults.MaxSemanticFileBytes,
+        };
+    }
+
+    private static string? Option(IReadOnlyList<string> arguments, string name)
+    {
+        for (int index = 1; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], name, StringComparison.Ordinal))
+            {
+                return arguments[index + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static List<string> OptionValues(IReadOnlyList<string> arguments, string name)
+    {
+        var values = new List<string>();
+        for (int index = 1; index < arguments.Count - 1; index++)
+        {
+            if (string.Equals(arguments[index], name, StringComparison.Ordinal))
+            {
+                values.Add(arguments[index + 1]);
+                index++;
+            }
+        }
+
+        return values;
+    }
+
+    private static async Task<int> WriteIndexErrorAsync(TextWriter error, string reason)
+    {
+        await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new ErrorReport
+        {
+            SchemaVersion = "couplet.index_stage.error.v1",
+            Code = "invalid_request",
+            Component = "cli",
+            Reason = reason,
+        })).ConfigureAwait(false);
+        return 64;
     }
 }

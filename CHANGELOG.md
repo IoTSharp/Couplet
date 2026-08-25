@@ -18,10 +18,17 @@
 - 增加 Small/Medium/Large 多语言 fixture、golden answers、确定性生成器、C0 benchmark/evidence runner 和 Codex/Claude Code paired eval runner（CPL-004）。
 - 增加本地优先安全、ignore/deny、显式在线 provider 与数据生命周期合同（CPL-005）。
 - 实现八个 typed、只读 MCP v1 schema，以及 stdio initialize、schema discovery、预算/取消、HMAC cursor、稳定错误和 unavailable tool call（CPL-006）。
+- 实现 canonical workspace/Git 发现、ignore/deny、symlink/binary/generated/large-file 策略和有界文件变更监听（CPL-010）。
+- 增加可替换 C#、TypeScript/JavaScript lexical partial 适配器，以及 stable file/symbol/chunk ID、UTF-8 source span、provenance、confidence 和符号边界 chunk（CPL-011/CPL-012）。
+- 增加 `couplet.indexing.v1` 机器合同、初次 snapshot、rename/modify/delete 增量计划和 parser/producer upgrade 确定性重建（CPL-013/CPL-015）。
+- 使用固定 `SonnetDB.Core 3.1.0` 实现 generation 独立 Document/FullText staging、path/fulltext index、批量 source-generated JSON 写入、一致性校验、checkpoint/reopen 和确定性 retry（CPL-014/CPL-015）。
+- CLI 增加 `workspace-scan` 与 `index-stage`；staging 报告显式返回 `published=false` 和 `CG-005`，不向 MCP 暴露未发布数据。
 
 ### Changed
 
 - 默认依赖从临时 SonnetDB 源码引用切换为官方 `SonnetDB.Core 3.1.0` 固定 package 和 content hash；Couplet 可独立 checkout 构建，但产品发布仍受 C1-C4 功能门禁约束。
+- C1 能力门控从“未实现”细化为“staging 已实现、generation 发布受阻”；exact/fulltext MCP 继续返回稳定 `capability_unavailable`，原因码为 `generation_publish_blocked`。
+- Native AOT 的 `index-stage` 通过固定包公开 options 关闭不兼容的 background flush/compaction/retention/KV maintenance worker，并在 staging/handshake 中显式报告 CG-006；JIT 路径继续启用默认后台维护。
 
 ### Fixed
 

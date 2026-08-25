@@ -27,12 +27,16 @@ CPL-003/CPL-007 实现启动 handshake，至少交换：
 
 Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自动可用；能力未达到路线 gate 时返回 `capability_unavailable`。
 
-### C0 当前实现状态
+### 当前实现状态
 
 - 固定 `SonnetDB.Core 3.1.0` 官方 package 和 content hash，公开 `GraphStore`、KV snapshot、Document、FullText、Vector、Graph path budget 与 diagnostics API 可用于联调。
 - `couplet.sonnetdb_handshake.v1` 分开报告 `integration_state` 与 `release_level`；public API 存在时前者可为 available，后者在联合门禁通过前仍为 unavailable。
 - `generation.atomic_publish` 和 `hybrid.shared_plan` 尚无已验证的 Couplet public 接线，分别由 CG-005、CG-002 阻塞。
 - 八个 MCP schema 和 stdio 协议已就绪，但索引/图/混合工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
+- C1 已通过固定 package 建立 generation 独立 Document collection、stable ID/path/qualified identity indexes 与 FullText index，批量写入、索引一致性、计数、checkpoint 和 reopen 均有自动化证据。
+- staging 查询探针实际走 `document_path_index:by_stable_id` 与 `document_fulltext:code_search`；它们只用于内部联调证据，不能替代 active generation filter、query lease 或公开 MCP contract。
+- package public API 审计未发现可满足跨模型 publication/query lease/retired cleanup 不变量的组合，因此 `generation.atomic_publish` 保持 unavailable，CG-005 已进入 active；Couplet 不建立应用层第二提交日志。
+- win-x64 Native AOT 实机发现默认 compaction/retention/KV worker dispose 使用不受支持的 `Thread.Interrupt()`；AOT staging 通过公开 options 关闭 background flush/compaction/retention/KV maintenance 并在报告中标记 CG-006，handshake 将 `database.background_maintenance` 报为 unavailable。JIT 路径保持默认维护开启。
 
 ## 变更规则
 

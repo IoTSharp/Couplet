@@ -31,6 +31,7 @@ public sealed class ContractSnapshotTests
 
     [Theory]
     [InlineData("contracts/code-graph/v1/schema.json", "couplet.code_graph.v1")]
+    [InlineData("contracts/indexing/v1/schema.json", "couplet.indexing.v1")]
     [InlineData("contracts/security/v1/policy.schema.json", null)]
     [InlineData("contracts/mcp/v1/schema-catalog.json", "couplet.mcp.v1")]
     public void JsonSchema_CommittedSnapshot_ParsesWithExpectedVersion(

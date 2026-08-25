@@ -183,7 +183,7 @@ public static class McpToolContractDispatcher
     private static (string Capability, string Reason, string Gap) ToolGate(string tool) => tool switch
     {
         McpToolNames.WorkspaceStatus or McpToolNames.CodeSearch or McpToolNames.SymbolGet =>
-            ("workspace.index", "c1_not_implemented", "CG-005"),
+            ("workspace.index", "generation_publish_blocked", "CG-005"),
         McpToolNames.SymbolRelations or McpToolNames.DependencyPath or McpToolNames.ImpactAnalyze
             or McpToolNames.ChangeContext => ("graph.native", "c2_release_gate_not_passed", "CG-001"),
         McpToolNames.ContextPack => ("hybrid.shared_plan", "c3_not_implemented", "CG-002"),

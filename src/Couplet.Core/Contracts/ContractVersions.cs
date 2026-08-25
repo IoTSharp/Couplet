@@ -49,4 +49,19 @@ public static class ContractVersions
     /// 获取 C0 evidence 报告合同版本。
     /// </summary>
     public const string C0Evidence = "couplet.c0_evidence.v1";
+
+    /// <summary>
+    /// 获取 C1 workspace discovery 合同版本。
+    /// </summary>
+    public const string WorkspaceDiscovery = "couplet.workspace_discovery.v1";
+
+    /// <summary>
+    /// 获取 C1 增量索引机器合同版本。
+    /// </summary>
+    public const string Indexing = "couplet.indexing.v1";
+
+    /// <summary>
+    /// 获取 C1 index staging 报告合同版本。
+    /// </summary>
+    public const string IndexStage = "couplet.index_stage.v1";
 }

@@ -42,7 +42,7 @@ Couplet 仓库自身尚未决定许可证；下表只记录依赖的上游许可
 
 | 范围 | 依赖 | 固定版本 | 上游许可证 | trim/AOT 风险 |
 |---|---|---|---|---|
-| runtime | `SonnetDB.Core` | `3.1.0` | MIT | 声明 trim/AOT compatible；C0 宿主 publish 通过，真实数据库/indexer 路径未验证 |
+| runtime | `SonnetDB.Core` | `3.1.0` | MIT | 声明 trim/AOT compatible；C1 AOT staging 在关闭不兼容 background workers 后通过，默认 worker dispose 受 CG-006 阻塞 |
 | transitive runtime | `System.IO.Hashing` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | transitive runtime | `System.Numerics.Tensors` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | test only | `Microsoft.NET.Test.Sdk` | `18.8.1` | MIT | 不进入生产输出 |
@@ -58,19 +58,19 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 | 验证 | 结果 | 边界 |
 |---|---|---|
 | Release solution build | PASS，0 warning / 0 error | Couplet C0 与官方 SonnetDB package |
-| tests | PASS，35/35 | stable ID/generation/security/schema/双客户端/错误/cursor/runner/依赖 |
-| CLI Native AOT publish/run | PASS，0 IL/AOT warning | 版本、能力和 C0 evidence |
+| tests | PASS，50/50 | C0 合同及 C1 workspace/language/index staging/reopen/access path |
+| CLI Native AOT publish/run | PASS，0 IL/AOT warning | 版本、能力、workspace discovery 与禁用 SonnetDB background workers 的 staging；CG-006 limitation 可见 |
 | daemon Native AOT publish/run | PASS，0 IL/AOT warning | 能力报告与可取消生命周期 |
 | MCP Server Native AOT publish/run | PASS，0 IL/AOT warning | initialize、schema discovery 和 unavailable tool call |
 | reflection JSON disabled | PASS | typed DTO 全部绑定 generated `JsonTypeInfo`，协议包装使用 `Utf8JsonWriter` |
 
-未验证：Linux/macOS Native AOT、真实数据库 open/query、语言 parser worker、安装包和长稳。它们不能从本次 PASS 外推。
+未验证：Linux/macOS Native AOT、AOT background compaction/retention/KV maintenance、已发布 generation query、语言 parser worker、安装包和长稳。它们不能从本次 PASS 外推。
 
 ## 6. executable/worker 发布矩阵
 
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
-| `Couplet.Cli` | 版本/能力、fixture/evidence runner | PASS | PASS | 否 | 未实现 start/stop/index/rebuild/diagnostics |
+| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index staging | PASS | PASS with CG-006 limitation | 否 | 无 generation publish/query；AOT SonnetDB background maintenance disabled |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
 | `Couplet.McpServer` | typed stdio/schema/unavailable tools | PASS | PASS | 否 | 无可查询 generation，八工具产品能力 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |

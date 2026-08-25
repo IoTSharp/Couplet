@@ -90,4 +90,34 @@ public sealed class ExecutableStartupTests
         Assert.Equal("invalid_request", root.GetProperty("code").GetString());
         Assert.Equal("explicit_workspace_required", root.GetProperty("reason").GetString());
     }
+
+    [Fact]
+    public async Task RunAsync_WorkspaceScan_ReportsC1DiscoveryWithoutAbsolutePaths()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), $"couplet-cli-scan-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(workspace, "sample.cs"), "public class Sample { }");
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            int exitCode = await Couplet.Cli.Program.RunAsync(
+                ["workspace-scan", "--workspace", workspace],
+                output,
+                error,
+                CancellationToken.None);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(string.Empty, error.ToString());
+            Assert.DoesNotContain(workspace, output.ToString(), StringComparison.OrdinalIgnoreCase);
+            using JsonDocument document = JsonDocument.Parse(output.ToString());
+            Assert.Equal("couplet.workspace_discovery.v1", document.RootElement.GetProperty("schema_version").GetString());
+            Assert.Equal("sample.cs", document.RootElement.GetProperty("files")[0].GetProperty("path").GetString());
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
 }

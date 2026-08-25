@@ -2,7 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Couplet.Core.Capabilities;
 using Couplet.Core.Evaluation;
+using Couplet.Core.Indexing;
 using Couplet.Core.Mcp;
+using Couplet.Core.Workspaces;
 
 namespace Couplet.Application.Serialization;
 
@@ -75,6 +77,54 @@ public static class CoupletJsonSerializer
     /// <returns>JSON 文本。</returns>
     public static string Serialize(FixtureGenerationReport report) =>
         SerializeCore(report, CoupletJsonContext.Default.FixtureGenerationReport);
+
+    /// <summary>
+    /// 序列化 workspace discovery 报告。
+    /// </summary>
+    /// <param name="report">发现报告。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(WorkspaceDiscoveryResult report) =>
+        SerializeCore(report, CoupletJsonContext.Default.WorkspaceDiscoveryResult);
+
+    /// <summary>
+    /// 序列化 C1 index staging 报告。
+    /// </summary>
+    /// <param name="report">staging 报告。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(IndexStageReport report) =>
+        SerializeCore(report, CoupletJsonContext.Default.IndexStageReport);
+
+    /// <summary>
+    /// 序列化 SonnetDB index document。
+    /// </summary>
+    /// <param name="document">存储记录。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(IndexStorageDocument document) =>
+        SerializeCore(document, CoupletJsonContext.Default.IndexStorageDocument);
+
+    /// <summary>
+    /// 序列化 generation manifest。
+    /// </summary>
+    /// <param name="manifest">generation manifest。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(GenerationManifest manifest) =>
+        SerializeCore(manifest, CoupletJsonContext.Default.GenerationManifest);
+
+    /// <summary>
+    /// 反序列化 generation manifest。
+    /// </summary>
+    /// <param name="json">JSON 文本。</param>
+    /// <returns>generation manifest。</returns>
+    public static GenerationManifest DeserializeGenerationManifest(string json) =>
+        Deserialize(json, CoupletJsonContext.Default.GenerationManifest);
+
+    /// <summary>
+    /// 反序列化 SonnetDB index document。
+    /// </summary>
+    /// <param name="json">JSON 文本。</param>
+    /// <returns>索引存储记录。</returns>
+    public static IndexStorageDocument DeserializeIndexStorageDocument(string json) =>
+        Deserialize(json, CoupletJsonContext.Default.IndexStorageDocument);
 
     internal static string Serialize(CursorPayload payload) =>
         SerializeCore(payload, CoupletJsonContext.Default.CursorPayload);

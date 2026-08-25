@@ -5,6 +5,7 @@ using Couplet.Core.Graph;
 using Couplet.Core.Indexing;
 using Couplet.Core.Mcp;
 using Couplet.Core.Security;
+using Couplet.Core.Workspaces;
 
 namespace Couplet.Application.Serialization;
 
@@ -47,4 +48,10 @@ namespace Couplet.Application.Serialization;
 [JsonSerializable(typeof(AgentEvalValidationResult))]
 [JsonSerializable(typeof(FixtureGenerationReport))]
 [JsonSerializable(typeof(C0EvidenceReport))]
+[JsonSerializable(typeof(WorkspaceDiscoveryResult))]
+[JsonSerializable(typeof(WorkspaceChangeBatch))]
+[JsonSerializable(typeof(WorkspaceIndexSnapshot))]
+[JsonSerializable(typeof(IncrementalIndexPlan))]
+[JsonSerializable(typeof(IndexStorageDocument))]
+[JsonSerializable(typeof(IndexStageReport))]
 internal sealed partial class CoupletJsonContext : JsonSerializerContext;
