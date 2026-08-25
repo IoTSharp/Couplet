@@ -64,4 +64,14 @@ public static class ContractVersions
     /// 获取 C1 index staging 报告合同版本。
     /// </summary>
     public const string IndexStage = "couplet.index_stage.v1";
+
+    /// <summary>
+    /// 获取 C1 staging generation 重开检查合同版本。
+    /// </summary>
+    public const string StagingInspection = "couplet.staging_inspection.v1";
+
+    /// <summary>
+    /// 获取 C1 容量 evidence 报告合同版本。
+    /// </summary>
+    public const string C1CapacityEvidence = "couplet.c1_capacity_evidence.v1";
 }

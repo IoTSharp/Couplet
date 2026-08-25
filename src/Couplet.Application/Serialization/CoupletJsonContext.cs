@@ -48,10 +48,12 @@ namespace Couplet.Application.Serialization;
 [JsonSerializable(typeof(AgentEvalValidationResult))]
 [JsonSerializable(typeof(FixtureGenerationReport))]
 [JsonSerializable(typeof(C0EvidenceReport))]
+[JsonSerializable(typeof(C1CapacityEvidenceReport))]
 [JsonSerializable(typeof(WorkspaceDiscoveryResult))]
 [JsonSerializable(typeof(WorkspaceChangeBatch))]
 [JsonSerializable(typeof(WorkspaceIndexSnapshot))]
 [JsonSerializable(typeof(IncrementalIndexPlan))]
 [JsonSerializable(typeof(IndexStorageDocument))]
 [JsonSerializable(typeof(IndexStageReport))]
+[JsonSerializable(typeof(StagingGenerationInspection))]
 internal sealed partial class CoupletJsonContext : JsonSerializerContext;

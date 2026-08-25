@@ -25,8 +25,24 @@ public static class IncrementalIndexPlanner
 
         bool producerChanged = previous is not null
             && !previous.ProducerVersions.SequenceEqual(current.ProducerVersions, StringComparer.Ordinal);
-        if (previous is null || producerChanged)
+        bool branchChanged = previous is not null
+            && (previous.Branch is not null || current.Branch is not null)
+            && !string.Equals(previous.Branch, current.Branch, StringComparison.Ordinal);
+        bool detachedHeadChanged = previous is not null
+            && previous.Branch is null
+            && current.Branch is null
+            && previous.HeadRevision is not null
+            && current.HeadRevision is not null
+            && !string.Equals(previous.HeadRevision, current.HeadRevision, StringComparison.Ordinal);
+        if (previous is null || producerChanged || branchChanged || detachedHeadChanged)
         {
+            string? rebuildReason = producerChanged
+                ? "producer_version_changed"
+                : branchChanged
+                    ? "git_branch_changed"
+                    : detachedHeadChanged
+                        ? "git_detached_head_changed"
+                        : null;
             return new IncrementalIndexPlan
             {
                 WorkspaceId = current.WorkspaceId,
@@ -34,8 +50,8 @@ public static class IncrementalIndexPlanner
                 IndexRevision = current.IndexRevision,
                 PreviousIndexRevision = previous?.IndexRevision,
                 Changes = current.Files.Select(file => Change(IndexFileChangeKind.Added, file.Path, null, file.ContentHash)).ToArray(),
-                RebuildRequired = producerChanged,
-                RebuildReason = producerChanged ? "producer_version_changed" : null,
+                RebuildRequired = rebuildReason is not null,
+                RebuildReason = rebuildReason,
             };
         }
 

@@ -23,6 +23,10 @@
 - 增加 `couplet.indexing.v1` 机器合同、初次 snapshot、rename/modify/delete 增量计划和 parser/producer upgrade 确定性重建（CPL-013/CPL-015）。
 - 使用固定 `SonnetDB.Core 3.1.0` 实现 generation 独立 Document/FullText staging、path/fulltext index、批量 source-generated JSON 写入、一致性校验、checkpoint/reopen 和确定性 retry（CPL-014/CPL-015）。
 - CLI 增加 `workspace-scan` 与 `index-stage`；staging 报告显式返回 `published=false` 和 `CG-005`，不向 MCP 暴露未发布数据。
+- 增加 Git branch/HEAD snapshot 身份、真实 branch switch 强制重建与跨分支 staging 隔离回归（CPL-013）。
+- 增加 staging completion marker 写入顺序、missing/corrupt marker 重开检查、checkpoint-budget 安全 retry 和 `couplet.staging_inspection.v1`（CPL-015）。
+- 增加 `c1-capacity`、`couplet.c1_capacity_evidence.v1` 与固定双语言 Medium/Large 语料；真实结果如实记录首次/增量、query、reopen、RSS、allocation 和数据库增长，当前 Performance/Capacity gate 为 FAIL。
+- 增加 Codex/Claude Code 对三个 C1 MCP 工具的端到端 golden gate，证明未发布 staging 不进入 `workspace_status`、`code_search` 或 `symbol_get`。
 
 ### Changed
 
@@ -32,4 +36,4 @@
 
 ### Fixed
 
-- 暂无。
+- SonnetDB Document 批次累计超过 checkpoint budget 时，只对固定包保证“WAL append 前拒绝”的稳定异常执行 checkpoint 后原批次 retry，避免中大型 staging 因 admission budget 提前失败。

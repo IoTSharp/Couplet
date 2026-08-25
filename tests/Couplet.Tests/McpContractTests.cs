@@ -66,6 +66,51 @@ public sealed class McpContractTests
         Assert.Equal(5, result.GetProperty("couplet").GetProperty("capabilities").GetArrayLength());
     }
 
+    [Theory]
+    [InlineData("Codex", "1.2.3")]
+    [InlineData("Claude Code", "4.5.6")]
+    public void ProcessLine_C1ToolsForSupportedClients_NeverExposeUnpublishedStaging(
+        string client,
+        string version)
+    {
+        McpProtocolHost host = CreateHost();
+        string initialize = "{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\",\"clientInfo\":{\"name\":\""
+            + client
+            + "\",\"version\":\""
+            + version
+            + "\"},\"capabilities\":{}}}";
+        Assert.NotNull(host.ProcessLine(initialize, CancellationToken.None));
+
+        (string Tool, string Arguments)[] calls =
+        [
+            (McpToolNames.WorkspaceStatus,
+                "{\"protocol_version\":\"1\",\"budget\":{\"max_items\":20,\"max_tokens\":1000,\"max_bytes\":4096,\"deadline_ms\":1000}}"),
+            (McpToolNames.CodeSearch,
+                "{\"protocol_version\":\"1\",\"budget\":{\"max_items\":20,\"max_tokens\":1000,\"max_bytes\":4096,\"deadline_ms\":1000},\"query\":\"Sample\",\"mode\":\"fulltext\"}"),
+            (McpToolNames.SymbolGet,
+                "{\"protocol_version\":\"1\",\"budget\":{\"max_items\":20,\"max_tokens\":1000,\"max_bytes\":4096,\"deadline_ms\":1000},\"symbol_id\":\"cpl_symbol_unpublished\"}"),
+        ];
+
+        foreach ((string tool, string arguments) in calls)
+        {
+            string request = "{\"jsonrpc\":\"2.0\",\"id\":\"" + tool
+                + "\",\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool
+                + "\",\"arguments\":" + arguments + "}}";
+            string response = host.ProcessLine(request, CancellationToken.None)!;
+
+            using JsonDocument document = JsonDocument.Parse(response);
+            JsonElement result = document.RootElement.GetProperty("result");
+            Assert.True(result.GetProperty("isError").GetBoolean());
+            JsonElement error = result.GetProperty("structuredContent").GetProperty("error");
+            Assert.Equal(McpErrorCodes.CapabilityUnavailable, error.GetProperty("code").GetString());
+            Assert.Equal("generation_publish_blocked", error.GetProperty("reason").GetString());
+            Assert.Equal("CG-005", error.GetProperty("gap_id").GetString());
+            Assert.DoesNotContain("items", response, StringComparison.Ordinal);
+            Assert.DoesNotContain("staging", response, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [Fact]
     public void ProcessLine_InitializeWithUnsupportedProtocol_ReturnsStableJsonRpcError()
     {

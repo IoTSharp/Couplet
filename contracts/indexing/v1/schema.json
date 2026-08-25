@@ -136,6 +136,10 @@
       "required": ["workspace_id", "source_revision", "index_revision", "producer_versions", "files", "failures"],
       "properties": {
         "workspace_id": { "type": "string", "minLength": 1 },
+        "repository_identity": { "type": ["string", "null"] },
+        "worktree_identity": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] },
+        "head_revision": { "type": ["string", "null"] },
         "source_revision": { "type": "string", "minLength": 1 },
         "index_revision": { "type": "string", "minLength": 1 },
         "previous_index_revision": { "type": ["string", "null"] },
@@ -214,6 +218,94 @@
         "blocking_gap": { "const": "CG-005" },
         "limitations": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "problems": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "staging_inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "workspace_id", "index_revision", "collection_name", "complete", "problems"],
+      "properties": {
+        "schema_version": { "const": "couplet.staging_inspection.v1" },
+        "workspace_id": { "type": "string", "minLength": 1 },
+        "index_revision": { "type": "string", "minLength": 1 },
+        "collection_name": { "type": "string", "pattern": "^cplg_[0-9a-f]{32}$" },
+        "manifest": { "oneOf": [{ "$ref": "#/$defs/generation_manifest" }, { "type": "null" }] },
+        "complete": { "type": "boolean" },
+        "problems": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "c1_corpus_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scale", "generator_version", "files", "lines_of_code", "declared_symbols", "corpus_hash"],
+      "properties": {
+        "scale": { "enum": ["medium", "large"] },
+        "generator_version": { "type": "string", "minLength": 1 },
+        "files": { "type": "integer", "minimum": 1 },
+        "lines_of_code": { "type": "integer", "minimum": 1 },
+        "declared_symbols": { "type": "integer", "minimum": 1 },
+        "corpus_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "c1_capacity_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "temperature", "samples", "p50_milliseconds", "p95_milliseconds", "p99_milliseconds", "allocated_bytes", "peak_working_set_bytes", "storage_growth_bytes", "access_path"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "temperature": { "enum": ["cold", "warm"] },
+        "samples": { "type": "integer", "minimum": 1 },
+        "p50_milliseconds": { "type": "number", "minimum": 0 },
+        "p95_milliseconds": { "type": "number", "minimum": 0 },
+        "p99_milliseconds": { "type": "number", "minimum": 0 },
+        "throughput_per_second": { "type": ["number", "null"], "minimum": 0 },
+        "allocated_bytes": { "type": "integer", "minimum": 0 },
+        "peak_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "storage_growth_bytes": { "type": "integer", "minimum": 0 },
+        "access_path": { "type": "string", "minLength": 1 },
+        "candidates": { "type": ["integer", "null"], "minimum": 0 },
+        "examined": { "type": ["integer", "null"], "minimum": 0 },
+        "returned": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "c1_capacity_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "logical_cores", "available_memory_bytes", "operating_system", "runtime", "execution_mode", "file_system", "storage", "power_profile", "background_load"],
+      "properties": {
+        "cpu": { "type": "string", "minLength": 1 },
+        "physical_cores": { "type": ["integer", "null"], "minimum": 1 },
+        "logical_cores": { "type": "integer", "minimum": 1 },
+        "available_memory_bytes": { "type": "integer", "minimum": 1 },
+        "operating_system": { "type": "string", "minLength": 1 },
+        "runtime": { "type": "string", "minLength": 1 },
+        "execution_mode": { "enum": ["jit", "native_aot"] },
+        "file_system": { "type": "string", "minLength": 1 },
+        "storage": { "type": "string", "minLength": 1 },
+        "power_profile": { "type": "string", "minLength": 1 },
+        "background_load": { "type": "string", "minLength": 1 }
+      }
+    },
+    "c1_capacity_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "commit", "corpus_manifest_hash", "corpus", "environment", "initial_counts", "incremental_counts", "modified_files", "database_bytes", "published", "correctness_recovery_passed", "performance_capacity_passed", "metrics", "problems", "generated_at_utc"],
+      "properties": {
+        "schema_version": { "const": "couplet.c1_capacity_evidence.v1" },
+        "commit": { "type": "string", "minLength": 1 },
+        "corpus_manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "corpus": { "$ref": "#/$defs/c1_corpus_generation" },
+        "environment": { "$ref": "#/$defs/c1_capacity_environment" },
+        "initial_counts": { "$ref": "#/$defs/generation_counts" },
+        "incremental_counts": { "$ref": "#/$defs/generation_counts" },
+        "modified_files": { "const": 100 },
+        "database_bytes": { "type": "integer", "minimum": 0 },
+        "published": { "const": false },
+        "correctness_recovery_passed": { "const": false },
+        "performance_capacity_passed": { "const": false },
+        "metrics": { "type": "array", "minItems": 10, "items": { "$ref": "#/$defs/c1_capacity_metric" } },
+        "problems": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "generated_at_utc": { "type": "string", "format": "date-time" }
       }
     }
   }

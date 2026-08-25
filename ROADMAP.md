@@ -76,9 +76,9 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - **CPL-010**：✅ 已实现工作区发现、canonical path、Git revision/branch/worktree、Git ignore、deny/ignore 优先级、symlink 边界、binary/generated file 和大文件 text-only 策略。
 - **CPL-011**：✅ 已实现可替换语言适配器与 Semantic Tier；首批 C#、TypeScript/JavaScript 明确为 lexical `Partial`，unsupported/large input 明确为 `TextOnly`，不宣称完整语义。
 - **CPL-012**：✅ 已实现 stable file/symbol/chunk ID、UTF-8 byte/line/column source span、content hash、provenance、adapter version、confidence 和符号边界 chunk。
-- **CPL-013**：🚧 已实现初次 snapshot、文件监听、content-hash rename、修改/删除和 producer upgrade 重建规划；一个 revision 原子发布、branch switch 发布和 query lease 受 CG-005 阻塞。
+- **CPL-013**：🚧 已实现初次 snapshot、文件监听、content-hash rename、修改/删除、producer upgrade，以及真实 Git branch/HEAD switch 强制全量重建与隔离 staging；一个 revision 原子发布、branch switch 查询可见性和 query lease 受 CG-005 阻塞。
 - **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；`workspace_status`、`code_search`、`symbol_get` 不读取 staging，仍返回 `generation_publish_blocked`。
-- **CPL-015**：🚧 已实现解析失败报告、取消、staging retry/checkpoint/reopen 校验和 schema/parser 确定性重建；发布点 crash/reopen、cursor 连续性与 retired generation 清理受 CG-005 阻塞。
+- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker 写入顺序、missing/corrupt marker 拒绝、checkpoint budget 安全 retry、staging consistency/reopen 和 schema/parser 确定性重建；发布点 crash/reopen、cursor 连续性与 retired generation 清理受 CG-005 阻塞。
 
 退出门禁：
 
@@ -88,7 +88,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - Codex 与 Claude Code 能读取相同合同，所有结果都可回到文件、revision 和 source span。
 - SonnetDB `#343/#346` 所需 snapshot lease/cursor/recovery public contract 与 Couplet generation 发布、query lease 和清理回归同时通过；对应 CG-005 关闭。
 
-状态：🚧 实现中（2026-08-25）。CPL-010~012 已落地，CPL-013~015 的安全 staging 部分已有自动化与真实 SonnetDB 证据；Correctness/Recovery 和 Performance/Capacity 退出门禁均未 PASS，发布需关闭 CG-005，Native AOT 长期后台维护另受 CG-006 阻塞。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)。
+状态：🚧 实现中（2026-08-25）。CPL-010~012 已落地，CPL-013~015 的 branch-switch、恢复检查和安全 staging 部分已有自动化与真实 SonnetDB 证据；Medium/Large 已完成一次真实 characterization，但首次/增量/内存和证据完整性门禁为 FAIL。Correctness/Recovery 和 Performance/Capacity 均未 PASS，发布需关闭 CG-005，Native AOT 长期后台维护另受 CG-006 阻塞。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
 
 ## C2：原生图代码智能
 

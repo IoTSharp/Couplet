@@ -71,6 +71,22 @@ public static class CoupletJsonSerializer
         SerializeCore(report, CoupletJsonContext.Default.C0EvidenceReport);
 
     /// <summary>
+    /// 序列化 C1 容量 evidence 报告。
+    /// </summary>
+    /// <param name="report">C1 容量报告。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(C1CapacityEvidenceReport report) =>
+        SerializeCore(report, CoupletJsonContext.Default.C1CapacityEvidenceReport);
+
+    /// <summary>
+    /// 反序列化固定 fixture manifest。
+    /// </summary>
+    /// <param name="json">JSON 文本。</param>
+    /// <returns>fixture manifest。</returns>
+    public static FixtureManifest DeserializeFixtureManifest(string json) =>
+        Deserialize(json, CoupletJsonContext.Default.FixtureManifest);
+
+    /// <summary>
     /// 序列化 fixture 生成报告。
     /// </summary>
     /// <param name="report">fixture 生成报告。</param>
@@ -93,6 +109,14 @@ public static class CoupletJsonSerializer
     /// <returns>JSON 文本。</returns>
     public static string Serialize(IndexStageReport report) =>
         SerializeCore(report, CoupletJsonContext.Default.IndexStageReport);
+
+    /// <summary>
+    /// 序列化 C1 staging 重开检查报告。
+    /// </summary>
+    /// <param name="inspection">staging 检查报告。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(StagingGenerationInspection inspection) =>
+        SerializeCore(inspection, CoupletJsonContext.Default.StagingGenerationInspection);
 
     /// <summary>
     /// 序列化 SonnetDB index document。

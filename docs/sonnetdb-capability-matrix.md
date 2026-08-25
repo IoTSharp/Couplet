@@ -35,7 +35,9 @@ Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自�
 - 八个 MCP schema 和 stdio 协议已就绪，但索引/图/混合工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
 - C1 已通过固定 package 建立 generation 独立 Document collection、stable ID/path/qualified identity indexes 与 FullText index，批量写入、索引一致性、计数、checkpoint 和 reopen 均有自动化证据。
 - staging 查询探针实际走 `document_path_index:by_stable_id` 与 `document_fulltext:code_search`；它们只用于内部联调证据，不能替代 active generation filter、query lease 或公开 MCP contract。
+- Codex 与 Claude Code 双客户端回归已验证三个 C1 MCP 工具在只有 staging 时稳定返回 `CG-005/generation_publish_blocked`，响应不含 staging items。
 - package public API 审计未发现可满足跨模型 publication/query lease/retired cleanup 不变量的组合，因此 `generation.atomic_publish` 保持 unavailable，CG-005 已进入 active；Couplet 不建立应用层第二提交日志。
+- Medium/Large 已完成一次真实 characterization；Large initial、两档 100-file 变化和两档 peak RSS 均未达目标，Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。详细数据见 [`c1-capacity-evidence.md`](c1-capacity-evidence.md)。
 - win-x64 Native AOT 实机发现默认 compaction/retention/KV worker dispose 使用不受支持的 `Thread.Interrupt()`；AOT staging 通过公开 options 关闭 background flush/compaction/retention/KV maintenance 并在报告中标记 CG-006，handshake 将 `database.background_maintenance` 报为 unavailable。JIT 路径保持默认维护开启。
 
 ## 变更规则

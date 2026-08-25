@@ -1,0 +1,39 @@
+{
+  "schema_version": "couplet.fixture_manifest.v1",
+  "id": "couplet-c1-capacity-v1",
+  "generator_version": "couplet-c1-capacity-v1",
+  "license": "deterministically generated; no third-party source corpus",
+  "scales": [
+    {
+      "id": "medium",
+      "target_lines_of_code": 1000000,
+      "minimum_symbols": 100000,
+      "minimum_relations": 1000000,
+      "seed": 130363,
+      "languages": [
+        { "family": "csharp", "language": "csharp", "share": 0.5, "semantic_tier": "partial" },
+        { "family": "typescript_javascript", "language": "typescript", "share": 0.5, "semantic_tier": "partial" }
+      ]
+    },
+    {
+      "id": "large",
+      "target_lines_of_code": 10000000,
+      "minimum_symbols": 1000000,
+      "minimum_relations": 10000000,
+      "seed": 155921,
+      "languages": [
+        { "family": "csharp", "language": "csharp", "share": 0.5, "semantic_tier": "partial" },
+        { "family": "typescript_javascript", "language": "typescript", "share": 0.5, "semantic_tier": "partial" }
+      ]
+    }
+  ],
+  "required_scenarios": [
+    "csharp_and_typescript_partial_adapters",
+    "initial_full_staging",
+    "one_hundred_file_incremental_change",
+    "exact_path_index_probe",
+    "fulltext_top_twenty_probe",
+    "checkpoint_and_reopen",
+    "unpublished_generation_gate"
+  ]
+}

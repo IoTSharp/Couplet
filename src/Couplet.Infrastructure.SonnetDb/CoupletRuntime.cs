@@ -4,6 +4,7 @@ using Couplet.Application.Indexing;
 using Couplet.Application.Serialization;
 using Couplet.Application.Workspaces;
 using Couplet.Core.Capabilities;
+using Couplet.Core.Evaluation;
 using Couplet.Core.Indexing;
 using Couplet.Core.Workspaces;
 
@@ -33,7 +34,7 @@ public static class CoupletRuntime
         if (component == ComponentKind.Cli && arguments.Count > 0)
         {
             string command = arguments[0].Trim().ToLowerInvariant();
-            if (command is "workspace-scan" or "index-stage")
+            if (command is "workspace-scan" or "index-stage" or "c1-capacity")
             {
                 return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
             }
@@ -66,7 +67,7 @@ public static class CoupletRuntime
         if (component == ComponentKind.Cli && arguments.Count > 0)
         {
             string command = arguments[0].Trim().ToLowerInvariant();
-            if (command is "workspace-scan" or "index-stage")
+            if (command is "workspace-scan" or "index-stage" or "c1-capacity")
             {
                 return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
             }
@@ -131,6 +132,16 @@ public static class CoupletRuntime
 
         try
         {
+            if (command == "c1-capacity")
+            {
+                return await RunC1CapacityAsync(
+                    arguments,
+                    workspacePath,
+                    output,
+                    error,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             WorkspaceDiscoveryPolicy policy = CreatePolicy(arguments);
             DiscoveredWorkspace workspace = await WorkspaceDiscoveryService.DiscoverAsync(
                 workspacePath,
@@ -170,6 +181,68 @@ public static class CoupletRuntime
         {
             return await WriteIndexErrorAsync(error, "index_io_failed").ConfigureAwait(false);
         }
+    }
+
+    private static async Task<int> RunC1CapacityAsync(
+        IReadOnlyList<string> arguments,
+        string workspacePath,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        string? databasePath = Option(arguments, "--database");
+        string? scaleId = Option(arguments, "--scale");
+        if (databasePath is null || scaleId is null)
+        {
+            return await WriteIndexErrorAsync(error, "capacity_database_and_scale_required").ConfigureAwait(false);
+        }
+
+        string repository = Option(arguments, "--repository") ?? Environment.CurrentDirectory;
+        string manifestPath = Option(arguments, "--fixture-manifest")
+            ?? Path.Combine(repository, "fixtures", "c1", "capacity-manifest.v1.json");
+        string manifestJson = await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        FixtureManifest manifest = CoupletJsonSerializer.DeserializeFixtureManifest(manifestJson);
+        CorpusScaleDefinition? scale = manifest.Scales.SingleOrDefault(
+            candidate => string.Equals(candidate.Id, scaleId, StringComparison.Ordinal));
+        if (scale is null)
+        {
+            return await WriteIndexErrorAsync(error, "capacity_scale_unknown").ConfigureAwait(false);
+        }
+
+        int querySamples = 30;
+        string? samplesValue = Option(arguments, "--query-samples");
+        if (samplesValue is not null
+            && (!int.TryParse(samplesValue, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out querySamples)
+                || querySamples < 3))
+        {
+            return await WriteIndexErrorAsync(error, "capacity_query_samples_invalid").ConfigureAwait(false);
+        }
+
+        string commit = Option(arguments, "--commit")
+            ?? Environment.GetEnvironmentVariable("GITHUB_SHA")
+            ?? "working_tree";
+        C1CapacityEvidenceReport report = await C1CapacityEvidenceRunner.RunAsync(
+            scale,
+            manifest.GeneratorVersion,
+            manifestJson,
+            workspacePath,
+            databasePath,
+            commit,
+            querySamples,
+            cancellationToken).ConfigureAwait(false);
+        string reportJson = CoupletJsonSerializer.Serialize(report);
+        string? reportPath = Option(arguments, "--report");
+        if (reportPath is not null)
+        {
+            await File.WriteAllTextAsync(
+                Path.GetFullPath(reportPath),
+                reportJson + Environment.NewLine,
+                new System.Text.UTF8Encoding(false),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        await output.WriteLineAsync(reportJson).ConfigureAwait(false);
+        return 0;
     }
 
     private static WorkspaceDiscoveryPolicy CreatePolicy(IReadOnlyList<string> arguments)

@@ -35,10 +35,11 @@ dotnet run --project src/Couplet.Cli -- capabilities
 dotnet run --project src/Couplet.Cli -- c0-evidence --repository . --commit working_tree
 dotnet run --project src/Couplet.Cli -- workspace-scan --workspace .
 dotnet run --project src/Couplet.Cli -- index-stage --workspace . --database artifacts/c1-smoke-db
+dotnet run --project src/Couplet.Cli -- c1-capacity --repository . --scale medium --workspace artifacts/c1-medium/workspace --database artifacts/c1-medium/database --report artifacts/c1-medium/report.json
 dotnet run --project src/Couplet.McpServer -- serve --workspace .
 ```
 
-`workspace-scan` 只输出 workspace-relative path 和去凭证仓库身份。`index-stage` 使用 generation 独立 collection 写入并校验 Document path index 与 FullText，报告中的 `published` 固定为 `false`、`blocking_gap` 固定为 `CG-005`；staging 数据不会通过 MCP 暴露。win-x64 Native AOT 下会通过固定包公开配置关闭不兼容的 background flush/compaction/retention/KV maintenance worker，并在 `limitations` 与 handshake 中报告 CG-006，不能据此宣称长期后台维护可用。MCP Server 当前实现 stdio `initialize`、`ping`、`tools/list` 和 `tools/call`，公开八个只读 schema；索引/图工具仍按对应阶段和 gap 返回结构化 unavailable 错误。依赖、许可证、trim/AOT 和逐进程发布矩阵见 [CPL-007 基础与发布边界](docs/cpl-007-foundation.md)。
+`workspace-scan` 只输出 workspace-relative path 和去凭证仓库身份。`index-stage` 使用 generation 独立 collection 写入并校验 Document path index 与 FullText，报告中的 `published` 固定为 `false`、`blocking_gap` 固定为 `CG-005`；staging 数据不会通过 MCP 暴露。`c1-capacity` 生成固定 Medium/Large 双语言语料并输出 source-generated staging characterization；当前两档 Performance/Capacity gate 均为 FAIL，不是产品容量声明。win-x64 Native AOT 下会通过固定包公开配置关闭不兼容的 background flush/compaction/retention/KV maintenance worker，并在 `limitations` 与 handshake 中报告 CG-006，不能据此宣称长期后台维护可用。MCP Server 当前实现 stdio `initialize`、`ping`、`tools/list` 和 `tools/call`，公开八个只读 schema；索引/图工具仍按对应阶段和 gap 返回结构化 unavailable 错误。依赖、许可证、trim/AOT 和逐进程发布矩阵见 [CPL-007 基础与发布边界](docs/cpl-007-foundation.md)。
 
 ## 目标能力
 
@@ -76,6 +77,7 @@ dotnet run --project src/Couplet.McpServer -- serve --workspace .
 - [安全、隐私与数据生命周期](docs/security-and-data-lifecycle.md)
 - [C0 合同与 Evidence Runner](docs/c0-evidence.md)
 - [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)
+- [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)
 - [Golden journeys](docs/golden-journeys.md)
 - [质量与性能门禁](docs/quality-gates.md)
 - [能力缺口目录](docs/capability-gaps.md)

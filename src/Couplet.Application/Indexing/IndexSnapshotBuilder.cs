@@ -90,6 +90,10 @@ public static class IndexSnapshotBuilder
         return new WorkspaceIndexSnapshot
         {
             WorkspaceId = workspace.Result.WorkspaceId,
+            RepositoryIdentity = workspace.Result.RepositoryIdentity,
+            WorktreeIdentity = workspace.Result.WorktreeIdentity,
+            Branch = workspace.Result.Branch,
+            HeadRevision = workspace.Result.HeadRevision,
             SourceRevision = workspace.Result.SourceRevision,
             IndexRevision = indexRevision,
             PreviousIndexRevision = previousIndexRevision,

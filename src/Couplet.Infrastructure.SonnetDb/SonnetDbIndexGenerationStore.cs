@@ -81,11 +81,18 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         IReadOnlyList<IndexStorageDocument> documents = IndexStorageMapper.CreateDocuments(snapshot);
         GenerationManifest manifest = IndexStorageMapper.CreateManifest(snapshot, documents, DateTimeOffset.UtcNow);
         string collectionName = CollectionName(snapshot.WorkspaceId, snapshot.IndexRevision);
+        string stagingKey = StagingKey(snapshot.WorkspaceId, snapshot.IndexRevision);
+
+        // A completed marker must never survive replacement of its collection.
+        _control.Delete(stagingKey);
+        _control.CreateSnapshot();
 
         if (_database.Documents.Catalog.TryGet(collectionName) is not null)
         {
             _database.Documents.Drop(collectionName);
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         DocumentCollectionSchema schema = DocumentCollectionSchema.Create(
             collectionName,
@@ -118,7 +125,18 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                     document.StableId,
                     CoupletJsonSerializer.Serialize(document),
                     null));
-            DocumentWriteResult result = collection.InsertMany(writes, ordered: true);
+            DocumentWriteResult result;
+            try
+            {
+                result = collection.InsertMany(writes, ordered: true);
+            }
+            catch (IOException exception) when (IsCheckpointBudgetRejection(exception))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _database.Documents.CheckpointAll();
+                result = collection.InsertMany(writes, ordered: true);
+            }
+
             if (!result.Committed || result.HasErrors)
             {
                 string[] writeProblems = result.Errors
@@ -129,6 +147,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                     .ToArray();
                 return Report(manifest, collectionName, false, writeProblems);
             }
+
         }
 
         DocumentIndexConsistencyReport consistency = collection.VerifyIndexConsistency();
@@ -150,10 +169,15 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
         if (problems.Count == 0)
         {
-            byte[] manifestBytes = Encoding.UTF8.GetBytes(CoupletJsonSerializer.Serialize(manifest));
-            _control.Put(StagingKey(snapshot.WorkspaceId, snapshot.IndexRevision), manifestBytes);
             _database.Documents.CheckpointAll();
+            byte[] manifestBytes = Encoding.UTF8.GetBytes(CoupletJsonSerializer.Serialize(manifest));
+            _control.Put(stagingKey, manifestBytes);
             _control.CreateSnapshot();
+
+            StagingGenerationInspection inspection = InspectStaging(
+                snapshot.WorkspaceId,
+                snapshot.IndexRevision);
+            problems.UnionWith(inspection.Problems);
         }
 
         return Report(manifest, collectionName, problems.Count == 0, problems.ToArray());
@@ -167,13 +191,110 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     /// <returns>manifest；不存在时为空。</returns>
     public GenerationManifest? ReadStagingManifest(string workspaceId, string indexRevision)
     {
+        StagingGenerationInspection inspection = InspectStaging(workspaceId, indexRevision);
+        return inspection.Complete ? inspection.Manifest : null;
+    }
+
+    /// <summary>
+    /// 检查一个 staging generation 在当前进程或重开后是否仍完整且不可发布。
+    /// </summary>
+    /// <param name="workspaceId">工作区 ID。</param>
+    /// <param name="indexRevision">索引 revision。</param>
+    /// <returns>manifest、Document、FullText 和 path index 的一致性结果。</returns>
+    public StagingGenerationInspection InspectStaging(string workspaceId, string indexRevision)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(indexRevision);
+
+        string collectionName = CollectionName(workspaceId, indexRevision);
+        var problems = new SortedSet<string>(StringComparer.Ordinal);
+        GenerationManifest? manifest = null;
         byte[]? bytes = _control.Get(StagingKey(workspaceId, indexRevision));
-        return bytes is null
-            ? null
-            : CoupletJsonSerializer.DeserializeGenerationManifest(Encoding.UTF8.GetString(bytes));
+        if (bytes is null)
+        {
+            problems.Add("staging_manifest_missing");
+        }
+        else
+        {
+            try
+            {
+                manifest = CoupletJsonSerializer.DeserializeGenerationManifest(Encoding.UTF8.GetString(bytes));
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                problems.Add("staging_manifest_invalid");
+            }
+        }
+
+        if (manifest is not null)
+        {
+            problems.UnionWith(GenerationContractValidator.Validate(manifest));
+            if (!string.Equals(manifest.WorkspaceId, workspaceId, StringComparison.Ordinal)
+                || !string.Equals(manifest.IndexRevision, indexRevision, StringComparison.Ordinal))
+            {
+                problems.Add("staging_manifest_identity_mismatch");
+            }
+
+            if (manifest.State != GenerationState.Staging)
+            {
+                problems.Add("staging_manifest_state_invalid");
+            }
+        }
+
+        DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(collectionName);
+        if (schema is null)
+        {
+            problems.Add("staging_collection_missing");
+        }
+        else
+        {
+            if (schema.TryGetIndex("by_stable_id") is null
+                || schema.TryGetIndex("by_record_type") is null
+                || schema.TryGetIndex("by_path") is null
+                || schema.TryGetIndex("by_qualified_identity") is null)
+            {
+                problems.Add("staging_path_index_missing");
+            }
+
+            DocumentFullTextIndex? fullTextIndex = schema.TryGetFullTextIndex(_fullTextIndexName);
+            if (fullTextIndex is null)
+            {
+                problems.Add("staging_fulltext_index_missing");
+            }
+
+            DocumentCollectionStore collection = _database.Documents.Open(collectionName);
+            DocumentIndexConsistencyReport consistency = collection.VerifyIndexConsistency();
+            if (!consistency.IsConsistent)
+            {
+                problems.Add("staging_document_index_inconsistent");
+            }
+
+            if (manifest is not null)
+            {
+                long expectedDocuments = manifest.Counts.Files + manifest.Counts.Symbols + manifest.Counts.Chunks;
+                if (collection.Count() != expectedDocuments)
+                {
+                    problems.Add("staging_document_count_mismatch");
+                }
+
+                if (fullTextIndex is not null
+                    && collection.GetFullTextDocumentCount(fullTextIndex) != manifest.Counts.FullTextDocuments)
+                {
+                    problems.Add("staging_fulltext_count_mismatch");
+                }
+            }
+        }
+
+        return new StagingGenerationInspection
+        {
+            WorkspaceId = workspaceId,
+            IndexRevision = indexRevision,
+            CollectionName = collectionName,
+            Manifest = manifest,
+            Complete = problems.Count == 0,
+            Problems = problems.ToArray(),
+        };
     }
 
     internal StagingQueryProbeResult ProbeExact(
@@ -187,13 +308,14 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(collectionName);
         if (schema?.TryGetIndex("by_stable_id") is not { } index)
         {
-            return new StagingQueryProbeResult("unavailable", 0, []);
+            return new StagingQueryProbeResult("unavailable", null, null, []);
         }
 
         DocumentCollectionStore collection = _database.Documents.Open(collectionName);
         IReadOnlyList<DocumentRow> rows = collection.GetByIndex(index, stableId, 2);
         return new StagingQueryProbeResult(
             "document_path_index:by_stable_id",
+            rows.Count,
             rows.Count,
             rows.Select(row => CoupletJsonSerializer.DeserializeIndexStorageDocument(row.Json)).ToArray());
     }
@@ -211,7 +333,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(collectionName);
         if (schema?.TryGetFullTextIndex(_fullTextIndexName) is not { } index)
         {
-            return new StagingQueryProbeResult("unavailable", 0, []);
+            return new StagingQueryProbeResult("unavailable", null, null, []);
         }
 
         DocumentCollectionStore collection = _database.Documents.Open(collectionName);
@@ -230,7 +352,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             }
         }
 
-        return new StagingQueryProbeResult("document_fulltext:code_search", hits.Count, documents);
+        return new StagingQueryProbeResult("document_fulltext:code_search", null, null, documents);
     }
 
     /// <summary>
@@ -281,6 +403,11 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         return normalized.Length == 0 ? "unknown" : normalized;
     }
 
+    private static bool IsCheckpointBudgetRejection(IOException exception) =>
+        exception.Message.StartsWith(
+            "KV atomic mutation batch was rejected before WAL append because it exceeds the current checkpoint budget",
+            StringComparison.Ordinal);
+
     private static string CollectionName(string workspaceId, string indexRevision)
     {
         string value = workspaceId + "\0" + indexRevision;
@@ -291,5 +418,6 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
 internal sealed record StagingQueryProbeResult(
     string AccessPath,
-    int Examined,
+    long? Candidates,
+    long? Examined,
     IReadOnlyList<IndexStorageDocument> Documents);

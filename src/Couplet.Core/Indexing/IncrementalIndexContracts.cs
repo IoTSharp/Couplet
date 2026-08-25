@@ -45,6 +45,14 @@ public sealed class WorkspaceIndexSnapshot
 {
     /// <summary>获取工作区 ID。</summary>
     public required string WorkspaceId { get; init; }
+    /// <summary>获取不含凭证和本机绝对路径的仓库身份。</summary>
+    public string? RepositoryIdentity { get; init; }
+    /// <summary>获取隔离不同 worktree 的稳定身份。</summary>
+    public string? WorktreeIdentity { get; init; }
+    /// <summary>获取 snapshot 对应的 Git branch；非 Git 或 detached HEAD 时为空。</summary>
+    public string? Branch { get; init; }
+    /// <summary>获取 snapshot 对应的 Git HEAD；无提交或非 Git 时为空。</summary>
+    public string? HeadRevision { get; init; }
     /// <summary>获取源码 revision。</summary>
     public required string SourceRevision { get; init; }
     /// <summary>获取确定性索引 revision。</summary>
@@ -164,6 +172,27 @@ public sealed class IndexStageReport
     public string? BlockingGap { get; init; }
     /// <summary>获取不影响本次 staging 完整性但限制运行模式的稳定能力说明。</summary>
     public IReadOnlyList<string> Limitations { get; init; } = [];
+    /// <summary>获取稳定排序的问题码。</summary>
+    public required IReadOnlyList<string> Problems { get; init; }
+}
+
+/// <summary>
+/// 一个查询不可见的 staging generation 重开检查结果。
+/// </summary>
+public sealed class StagingGenerationInspection
+{
+    /// <summary>获取检查合同版本。</summary>
+    public string SchemaVersion { get; init; } = ContractVersions.StagingInspection;
+    /// <summary>获取工作区 ID。</summary>
+    public required string WorkspaceId { get; init; }
+    /// <summary>获取索引 revision。</summary>
+    public required string IndexRevision { get; init; }
+    /// <summary>获取 SonnetDB collection 名称。</summary>
+    public required string CollectionName { get; init; }
+    /// <summary>获取能够通过 source-generated JSON 读取的 manifest。</summary>
+    public GenerationManifest? Manifest { get; init; }
+    /// <summary>获取 manifest、Document、FullText 和 path indexes 是否构成完整 staging。</summary>
+    public required bool Complete { get; init; }
     /// <summary>获取稳定排序的问题码。</summary>
     public required IReadOnlyList<string> Problems { get; init; }
 }

@@ -21,7 +21,7 @@
 | CG-005 | 固定 `SonnetDB.Core 3.1.0` 未暴露 Couplet 所需的跨模型 generation filter/active manifest 原子切换、query snapshot lease、稳定 cursor 和安全 retired generation 清理 public contract | SonnetDB M40 `#343/#346` + Couplet CPL-002/CPL-013/CPL-015 | Couplet C1 发布及后续 | active | Document/FullText staging、checkpoint/reopen 与访问路径可继续取证；未关闭前 MCP 不读取 staging，不宣称原子增量索引完成，也不引入第二提交日志 |
 | CG-006 | `SonnetDB.Core 3.1.0` 默认 compaction/retention/KV background workers 在 Native AOT dispose 时调用不受支持的 `Thread.Interrupt()` | SonnetDB Core lifecycle + Couplet CPL-007/CPL-015/CPL-043 | Native AOT 长期索引维护及 C1/C4 发布证据 | active | AOT staging 可通过公开 options 关闭相关 workers 并显式报告 limitation；不得吞掉 dispose 异常或宣称后台维护/长稳通过 |
 
-上述是已知前置能力，不是实测性能结论。首个 C0/C1 benchmark 产生后，任何未达 [质量与性能门禁](quality-gates.md)的路径必须新增独立 gap，不得只在日志或 PR 评论中记录。
+上述状态以公共能力边界为主；C1 Medium/Large characterization 已把未达门禁的性能结果附到 CG-005 复现语料，但尚不足以把每个性能失败归因为特定 Core 缺口。进一步最小复现确认责任边界后，通用 Core 问题必须登记独立 gap，Couplet 产品层问题必须直接修复，不得只在日志或 PR 评论中记录。
 
 ### CG-005：C1 generation 发布与查询租约
 
@@ -29,13 +29,13 @@
 - 首次稳定复现：2026-08-25 / C1 working tree based on `329519d`
 - Owner：SonnetDB M40 `#343/#346` public contract + Couplet CPL-013~015 integration
 - 阻塞阶段：C1 Correctness/Recovery、C1 Performance/Capacity，以及 C1 后续所有公开查询
-- Corpus：Couplet 自身工作区和自动化 C#/TypeScript 小型 fixture
-- 操作：构建 generation 独立 Document collection、path indexes 和 FullText index，批量写入后 checkpoint/reopen；随后尝试建立 active generation publication/query lease/cleanup 生命周期
+- Corpus：Couplet 自身工作区、自动化 C#/TypeScript 小型 fixture，以及 `fixtures/c1/capacity-manifest.v1.json` 冻结的 Medium（1m LOC / 100k symbols）和 Large（10m LOC / 1m symbols）双语言语料；manifest SHA-256 为 `38f906b9b65f88e11bb2953fa2ee45e97105815c13d6b8a364230da1ee9fb1b4`
+- 操作：构建 generation 独立 Document collection、path indexes 和 FullText index，批量写入后 checkpoint/reopen；执行 initial、100-file 变化、exact/FullText warm query 与 consistency reopen；随后尝试建立 active generation publication/query lease/cleanup 生命周期
 - 预期：跨模型派生状态以单一原子 active revision 发布，查询绑定 lease/cursor，retired generation 仅在租约归零后清理
-- 实际：固定 package 可完成 KV、Document、FullText staging 与 reopen，但 public API 中没有可由 Couplet 正确组合出的跨模型 publish/query lease/cleanup 合同
-- 最小复现：`Stage_WithCSharpAndTypeScript_PersistsVerifiedUnpublishedGenerationAcrossReopen`；CLI `index-stage` 报告 `published=false`、`blocking_gap=CG-005`
+- 实际：固定 package 可完成 KV、Document、FullText staging 与 reopen，但 public API 中没有可由 Couplet 正确组合出的跨模型 publish/query lease/cleanup 合同。Medium initial 74.814 s、100-file 73.086 s、peak RSS 4.648 GiB；Large initial 3,261.419 s、100-file 6,472.504 s、peak RSS 28.329 GiB。Large initial、两档增量和两档内存门禁失败，且两个 generation 数据库分别增长至 3.087 GiB / 31.142 GiB；这些性能数据仍需分离 Couplet 与 Core 责任，不单凭当前报告归因
+- 最小复现：`Stage_WithCSharpAndTypeScript_PersistsVerifiedUnpublishedGenerationAcrossReopen`、`Plan_AfterRealGitBranchSwitch_RebuildsAndKeepsStagingGenerationsIsolatedAcrossReopen`、`InspectStaging_AfterMissingOrCorruptCompletionMarker_RejectsGenerationAndAllowsDeterministicRestage`；CLI `index-stage` 报告 `published=false`、`blocking_gap=CG-005`；`c1-capacity --scale medium|large` 产生 `couplet.c1_capacity_evidence.v1`
 - 禁止旁路：不得由 Couplet 增加第二提交日志、将 staging 暴露为 active、用不受租约保护的 collection 指针模拟发布，或在 MCP 中隐藏 revision 不连续
-- 关闭证据：SonnetDB public API/回归 commit、kill-before/after-publish 回归、cursor/lease/cleanup 回归、Couplet Medium/Large 固定硬件报告共同 PASS
+- 关闭证据：SonnetDB public API/回归 commit、kill-before/after-publish 回归、cursor/lease/cleanup 回归、Codex/Claude Code 发布后查询一致性回归、Couplet Medium/Large 固定硬件 correctness/recovery 与 performance/capacity 报告共同 PASS
 
 ### CG-006：Native AOT 后台维护生命周期
 

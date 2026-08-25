@@ -8,6 +8,7 @@ using Couplet.Core.Indexing;
 using Couplet.Core.Languages;
 using Couplet.Core.Workspaces;
 using Couplet.Infrastructure.SonnetDb;
+using SonnetDB.Engine;
 
 namespace Couplet.Tests;
 
@@ -234,6 +235,83 @@ public sealed class C1WorkspaceAndIndexingTests
     }
 
     [Fact]
+    public async Task Plan_AfterRealGitBranchSwitch_RebuildsAndKeepsStagingGenerationsIsolatedAcrossReopen()
+    {
+        string root = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            RunGit(root, "init", "--initial-branch=main");
+            RunGit(root, "config", "user.email", "couplet@example.invalid");
+            RunGit(root, "config", "user.name", "Couplet Tests");
+            await File.WriteAllTextAsync(Path.Combine(root, "Shared.cs"), "public class Shared { public int Value() => 1; }");
+            RunGit(root, "add", "Shared.cs");
+            RunGit(root, "commit", "-m", "shared");
+            RunGit(root, "branch", "feature");
+
+            await File.WriteAllTextAsync(Path.Combine(root, "MainOnly.cs"), "public class MainOnly { }");
+            RunGit(root, "add", "MainOnly.cs");
+            RunGit(root, "commit", "-m", "main only");
+            DiscoveredWorkspace mainWorkspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                root,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot mainSnapshot = await IndexSnapshotBuilder.BuildAsync(mainWorkspace, null);
+
+            RunGit(root, "checkout", "feature");
+            await File.WriteAllTextAsync(Path.Combine(root, "Shared.cs"), "public class Shared { public int Value() => 2; }");
+            await File.WriteAllTextAsync(Path.Combine(root, "FeatureOnly.cs"), "public class FeatureOnly { }");
+            RunGit(root, "add", "Shared.cs", "FeatureOnly.cs");
+            RunGit(root, "commit", "-m", "feature only");
+            DiscoveredWorkspace featureWorkspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                root,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot featureSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                featureWorkspace,
+                mainSnapshot.IndexRevision);
+            IncrementalIndexPlan switchPlan = IncrementalIndexPlanner.Plan(mainSnapshot, featureSnapshot);
+
+            Assert.Equal("main", mainSnapshot.Branch);
+            Assert.Equal("feature", featureSnapshot.Branch);
+            Assert.NotEqual(mainSnapshot.HeadRevision, featureSnapshot.HeadRevision);
+            Assert.True(switchPlan.RebuildRequired);
+            Assert.Equal("git_branch_changed", switchPlan.RebuildReason);
+            Assert.All(switchPlan.Changes, change => Assert.Equal(IndexFileChangeKind.Added, change.Kind));
+
+            string mainOnlyId = Assert.Single(
+                mainSnapshot.Files.SelectMany(file => file.Symbols),
+                symbol => symbol.QualifiedIdentity == "MainOnly").Id;
+            string featureOnlyId = Assert.Single(
+                featureSnapshot.Files.SelectMany(file => file.Symbols),
+                symbol => symbol.QualifiedIdentity == "FeatureOnly").Id;
+
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                IndexStageReport mainReport = store.Stage(
+                    mainSnapshot,
+                    IncrementalIndexPlanner.Plan(null, mainSnapshot));
+                IndexStageReport featureReport = store.Stage(featureSnapshot, switchPlan);
+
+                Assert.True(mainReport.Staged);
+                Assert.True(featureReport.Staged);
+                Assert.False(mainReport.Published);
+                Assert.False(featureReport.Published);
+                Assert.Single(store.ProbeExact(mainSnapshot.WorkspaceId, mainSnapshot.IndexRevision, mainOnlyId).Documents);
+                Assert.Empty(store.ProbeExact(featureSnapshot.WorkspaceId, featureSnapshot.IndexRevision, mainOnlyId).Documents);
+                Assert.Single(store.ProbeExact(featureSnapshot.WorkspaceId, featureSnapshot.IndexRevision, featureOnlyId).Documents);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.True(reopened.InspectStaging(mainSnapshot.WorkspaceId, mainSnapshot.IndexRevision).Complete);
+            Assert.True(reopened.InspectStaging(featureSnapshot.WorkspaceId, featureSnapshot.IndexRevision).Complete);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
     public void CreateDocuments_WithRepeatedLogicalSymbol_CollapsesToDeterministicPrimaryDefinition()
     {
         const string firstContent = "namespace Demo; public partial class Shared { public void First() { } }";
@@ -377,10 +455,72 @@ public sealed class C1WorkspaceAndIndexingTests
             Assert.True(report.Manifest.Counts.FullTextDocuments >= report.Manifest.Counts.Symbols);
 
             using var reopened = new SonnetDbIndexGenerationStore(database);
-            GenerationManifest manifest = Assert.IsType<GenerationManifest>(
-                reopened.ReadStagingManifest(snapshot.WorkspaceId, snapshot.IndexRevision));
+            StagingGenerationInspection inspection = reopened.InspectStaging(
+                snapshot.WorkspaceId,
+                snapshot.IndexRevision);
+            Assert.True(inspection.Complete);
+            Assert.Empty(inspection.Problems);
+            GenerationManifest manifest = Assert.IsType<GenerationManifest>(inspection.Manifest);
             Assert.Equal(snapshot.IndexRevision, manifest.IndexRevision);
             Assert.Equal(GenerationState.Staging, manifest.State);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(root);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task InspectStaging_AfterMissingOrCorruptCompletionMarker_RejectsGenerationAndAllowsDeterministicRestage()
+    {
+        string root = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "Sample.cs"), "public class Sample { public void Run() { } }");
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                root,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(discovered, null);
+            IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(null, snapshot);
+
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                Assert.True(store.Stage(snapshot, plan).Staged);
+            }
+
+            string stagingKey = $"staging/{snapshot.WorkspaceId}/{snapshot.IndexRevision}";
+            using (Tsdb raw = Tsdb.Open(new TsdbOptions { RootDirectory = database }))
+            {
+                Assert.True(raw.Keyspaces.Open("couplet_control").Delete(stagingKey));
+                raw.Keyspaces.Open("couplet_control").CreateSnapshot();
+            }
+
+            using (var reopened = new SonnetDbIndexGenerationStore(database))
+            {
+                StagingGenerationInspection missing = reopened.InspectStaging(
+                    snapshot.WorkspaceId,
+                    snapshot.IndexRevision);
+                Assert.False(missing.Complete);
+                Assert.Contains("staging_manifest_missing", missing.Problems);
+                Assert.Null(reopened.ReadStagingManifest(snapshot.WorkspaceId, snapshot.IndexRevision));
+                Assert.True(reopened.Stage(snapshot, plan).Staged);
+            }
+
+            using (Tsdb raw = Tsdb.Open(new TsdbOptions { RootDirectory = database }))
+            {
+                raw.Keyspaces.Open("couplet_control").Put(stagingKey, Encoding.UTF8.GetBytes("{"));
+                raw.Keyspaces.Open("couplet_control").CreateSnapshot();
+            }
+
+            using var corruptReopen = new SonnetDbIndexGenerationStore(database);
+            StagingGenerationInspection corrupt = corruptReopen.InspectStaging(
+                snapshot.WorkspaceId,
+                snapshot.IndexRevision);
+            Assert.False(corrupt.Complete);
+            Assert.Contains("staging_manifest_invalid", corrupt.Problems);
+            Assert.Null(corruptReopen.ReadStagingManifest(snapshot.WorkspaceId, snapshot.IndexRevision));
         }
         finally
         {
