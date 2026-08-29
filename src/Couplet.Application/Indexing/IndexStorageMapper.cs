@@ -134,7 +134,22 @@ public static class IndexStorageMapper
     public static GenerationManifest CreateManifest(
         WorkspaceIndexSnapshot snapshot,
         IReadOnlyList<IndexStorageDocument> documents,
-        DateTimeOffset createdAtUtc)
+        DateTimeOffset createdAtUtc) =>
+        CreateManifest(snapshot, documents, createdAtUtc, GenerationState.Staging);
+
+    /// <summary>
+    /// 根据 snapshot 和存储记录创建指定生命周期状态的 generation manifest。
+    /// </summary>
+    /// <param name="snapshot">generation snapshot。</param>
+    /// <param name="documents">确定性存储记录。</param>
+    /// <param name="createdAtUtc">创建 UTC 时间。</param>
+    /// <param name="state">写入 generation 资源的生命周期状态。</param>
+    /// <returns>generation manifest。</returns>
+    public static GenerationManifest CreateManifest(
+        WorkspaceIndexSnapshot snapshot,
+        IReadOnlyList<IndexStorageDocument> documents,
+        DateTimeOffset createdAtUtc,
+        GenerationState state)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(documents);
@@ -171,7 +186,7 @@ public static class IndexStorageMapper
                 GraphEdges = 0,
             },
             Checksum = digest,
-            State = GenerationState.Staging,
+            State = state,
             CreatedAtUtc = createdAtUtc,
         };
     }

@@ -61,6 +61,11 @@ public static class ContractVersions
     public const string Indexing = "couplet.indexing.v1";
 
     /// <summary>
+    /// 获取 C1 generation 内增量规划 snapshot 合同版本。
+    /// </summary>
+    public const string IndexPlanningSnapshot = "couplet.index_planning_snapshot.v1";
+
+    /// <summary>
     /// 获取 C1 index staging 报告合同版本。
     /// </summary>
     public const string IndexStage = "couplet.index_stage.v1";

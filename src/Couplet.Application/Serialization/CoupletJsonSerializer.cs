@@ -111,6 +111,22 @@ public static class CoupletJsonSerializer
         SerializeCore(report, CoupletJsonContext.Default.IndexStageReport);
 
     /// <summary>
+    /// 序列化 generation 内的轻量增量规划 snapshot。
+    /// </summary>
+    /// <param name="snapshot">规划 snapshot。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(IndexPlanningSnapshot snapshot) =>
+        SerializeCore(snapshot, CoupletJsonContext.Default.IndexPlanningSnapshot);
+
+    /// <summary>
+    /// 反序列化 generation 内的轻量增量规划 snapshot。
+    /// </summary>
+    /// <param name="json">JSON 文本。</param>
+    /// <returns>规划 snapshot。</returns>
+    public static IndexPlanningSnapshot DeserializeIndexPlanningSnapshot(string json) =>
+        Deserialize(json, CoupletJsonContext.Default.IndexPlanningSnapshot);
+
+    /// <summary>
     /// 序列化 C1 staging 重开检查报告。
     /// </summary>
     /// <param name="inspection">staging 检查报告。</param>

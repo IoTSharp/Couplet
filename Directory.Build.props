@@ -11,7 +11,15 @@
     <IsPackable>false</IsPackable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RestorePackagesPath>$(MSBuildThisFileDirectory)artifacts\nuget</RestorePackagesPath>
-    <NuGetLockFilePath Condition="'$(CoupletPublishAot)' == 'true'">$(MSBuildProjectDirectory)\obj\packages.aot.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
+    <UseSonnetDbSource Condition="'$(UseSonnetDbSource)' == ''">false</UseSonnetDbSource>
+    <SonnetDbSourceProject Condition="'$(SonnetDbSourceProject)' == ''">$(MSBuildThisFileDirectory)..\SonnetDB\src\SonnetDB.Core\SonnetDB.Core.csproj</SonnetDbSourceProject>
+    <BaseIntermediateOutputPath Condition="'$(UseSonnetDbSource)' == 'true'">$(MSBuildThisFileDirectory)artifacts\obj\sonnetdb-source\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath Condition="'$(UseSonnetDbSource)' == 'true'">$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <BaseOutputPath Condition="'$(UseSonnetDbSource)' == 'true'">$(MSBuildThisFileDirectory)artifacts\bin\sonnetdb-source\$(MSBuildProjectName)\</BaseOutputPath>
+    <DefaultItemExcludes Condition="'$(UseSonnetDbSource)' == 'true'">$(DefaultItemExcludes);$(MSBuildProjectDirectory)\obj\**</DefaultItemExcludes>
+    <NuGetLockFilePath Condition="'$(UseSonnetDbSource)' == 'true'">$(MSBuildProjectExtensionsPath)packages.lock.json</NuGetLockFilePath>
+    <NuGetLockFilePath Condition="'$(UseSonnetDbSource)' != 'true' and '$(CoupletPublishAot)' == 'true'">$(MSBuildProjectDirectory)\obj\packages.aot.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
+    <DefineConstants Condition="'$(UseSonnetDbSource)' == 'true'">$(DefineConstants);COUPLET_SONNETDB_SOURCE_GENERATIONS</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsTestProject)' != 'true'">

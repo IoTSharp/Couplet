@@ -1,7 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
+  <ItemGroup Condition="'$(UseSonnetDbSource)' != 'true'">
     <PackageReference Include="SonnetDB.Core" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseSonnetDbSource)' == 'true'">
+    <ProjectReference Include="$(SonnetDbSourceProject)"
+                      AdditionalProperties="Configuration=$(Configuration)"
+                      SetConfiguration="Configuration=$(Configuration)" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Couplet.Application\Couplet.Application.csproj" />
     <ProjectReference Include="..\Couplet.Core\Couplet.Core.csproj" />
   </ItemGroup>
+
+  <Target Name="ValidateSonnetDbSourceProject"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(UseSonnetDbSource)' == 'true' and !Exists('$(SonnetDbSourceProject)')">
+    <Error Text="UseSonnetDbSource=true requires an existing SonnetDbSourceProject: $(SonnetDbSourceProject)" />
+  </Target>
 </Project>

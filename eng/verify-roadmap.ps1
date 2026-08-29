@@ -27,6 +27,7 @@ $requiredFiles = @(
     'fixtures/c0/golden-answers.v1.json',
     'fixtures/c0/agent-eval-manifest.v1.json',
     'fixtures/c1/capacity-manifest.v1.json',
+    'fixtures/c1/language-golden.v1.json',
     'docs/architecture.md',
     'docs/code-graph-v1-contract.md',
     'docs/security-and-data-lifecycle.md',

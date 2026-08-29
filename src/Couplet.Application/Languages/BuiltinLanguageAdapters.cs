@@ -30,7 +30,7 @@ public static class BuiltinLanguageAdapters
 
     private sealed class DeclarationLanguageAdapter : ILanguageAdapter
     {
-        private const string _version = "1.0.0";
+        private const string _version = "1.1.0";
         private readonly HashSet<string> _typeKeywords;
 
         internal DeclarationLanguageAdapter(
@@ -97,9 +97,9 @@ public static class BuiltinLanguageAdapters
                     },
                     Confidence = new Confidence
                     {
-                        Kind = ConfidenceKind.Exact,
-                        Score = 1,
-                        Rule = Capability.AdapterId + ".declaration.v1",
+                        Kind = ConfidenceKind.Inferred,
+                        Score = 0.9,
+                        Rule = Capability.AdapterId + ".declaration.v2",
                     },
                 });
             }

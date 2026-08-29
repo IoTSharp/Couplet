@@ -28,5 +28,6 @@ C0 自动化覆盖本地默认策略、在线 provider 未授权、路径绑定�
 - deny 先于 ignore，默认拒绝凭证、`.git`、Couplet 数据库和常见构建产物；Git ignore、binary、generated、symlink escape、unreadable 和大文件 text-only 均以稳定 disposition/reason 报告。
 - 被纳入的文件先冻结 content hash，再由 adapter 读取；发现后文件发生变化时以 `file_changed_after_discovery` 失败，不把跨 revision 内容写进同一 snapshot。
 - staging collection 以 workspace/index revision 派生的非路径名称隔离，manifest 只在 Document/FullText 计数与索引一致性通过后写入控制 keyspace。
-- `CG-005` 关闭前没有 active generation 或 query lease；MCP 不读取 staging，retired generation 也不自动清理，避免把不完整生命周期伪装成安全发布。
-- Native AOT staging 因 CG-006 关闭固定包的 background flush/compaction/retention/KV maintenance workers，且必须在报告中暴露 limitation；这只适用于无 TTL、无时序写入的短程 staging 取证，不满足长期保留、磁盘增长或 Production 清理门禁。
+- 默认 3.1.0 package lane 没有 active generation 或 query lease，MCP 不读取 staging。source lane 由 `Tsdb.Generations` 原子发布 generation 独占 planning KV、Document 和 FullText 资源，并用 query lease 阻止 retired cleanup；MCP 尚未绑定该 lease，因此仍 unavailable。
+- source runtime 当前在没有 query lease 时立即清理 retired generation，尚未读取 `RetiredGenerationRetention` 进行延迟调度；该边界通过 `CPL-015:retired_generation_retention_policy_not_connected` 显式报告，不能视为完整数据生命周期策略。
+- 默认 package Native AOT 因 CG-006 关闭 background workers 并暴露 limitation；最新 source lane 使用已修复的默认 worker。普通 source/JIT handshake 不声明 AOT 已验证；source Native AOT publish/no-op smoke 已通过，但 7 天长稳未归档前仍不能外推为 Production 维护证据。

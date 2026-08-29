@@ -1,0 +1,846 @@
+{
+  "schema_version": "couplet.c1_language_golden.v1",
+  "fixture_id": "couplet-c1-language-golden-v1",
+  "semantic_tier": "Partial",
+  "confidence_scope": "lexical_declaration_inference_only",
+  "unsupported_declarations": [
+    {
+      "language": "csharp",
+      "display_name": "Echo",
+      "reason": "generic_method_not_supported_by_lexical_v1"
+    },
+    {
+      "language": "typescript",
+      "display_name": "echo",
+      "reason": "generic_method_not_supported_by_lexical_v1"
+    }
+  ],
+  "snapshot": {
+    "workspace_id": "cpl_workspace_c1_language_golden",
+    "repository_identity": "fixture:couplet-c1-language-golden-v1",
+    "worktree_identity": "fixture",
+    "branch": null,
+    "head_revision": null,
+    "source_revision": "source-c1-language-golden-v1",
+    "index_revision": "index-c1-language-golden-v1",
+    "previous_index_revision": null,
+    "producer_versions": [
+      "couplet.lexical.csharp@1.1.0",
+      "couplet.lexical.javascript@1.1.0",
+      "couplet.lexical.typescript@1.1.0"
+    ],
+    "files": [
+      {
+        "id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+        "path": "csharp/declarations.cs",
+        "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7",
+        "length": 337,
+        "language": "csharp",
+        "semantic_tier": "Partial",
+        "adapter_id": "couplet.lexical.csharp",
+        "adapter_version": "1.1.0",
+        "symbols": [
+          {
+            "id": "cpl_symbol_d1972acc1ffe7eb77bd0a5408523a3bdf4fd2e75",
+            "kind": "Type",
+            "display_name": "格式化器",
+            "qualified_identity": "Demo.Unicode.格式化器",
+            "signature": "class 格式化器",
+            "container_id": null,
+            "language": "csharp",
+            "definition": {
+              "path": "csharp/declarations.cs",
+              "start_line": 4,
+              "start_column": 14,
+              "start_byte": 101,
+              "end_line": 4,
+              "end_column": 26,
+              "end_byte": 113
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.csharp",
+              "adapter_version": "1.1.0",
+              "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.csharp.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_9fa2f6ac19db15649ea7a3df3f9918db2cfcb9cd",
+            "kind": "Member",
+            "display_name": "Format",
+            "qualified_identity": "Demo.Unicode.格式化器.Format(int value)",
+            "signature": "public int Format(int value)",
+            "container_id": "cpl_symbol_d1972acc1ffe7eb77bd0a5408523a3bdf4fd2e75",
+            "language": "csharp",
+            "definition": {
+              "path": "csharp/declarations.cs",
+              "start_line": 6,
+              "start_column": 16,
+              "start_byte": 134,
+              "end_line": 6,
+              "end_column": 22,
+              "end_byte": 140
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.csharp",
+              "adapter_version": "1.1.0",
+              "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.csharp.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_c187e152453c850200bcb880e7abfadf42e3b604",
+            "kind": "Member",
+            "display_name": "Format",
+            "qualified_identity": "Demo.Unicode.格式化器.Format(string value)",
+            "signature": "public string Format(string value)",
+            "container_id": "cpl_symbol_d1972acc1ffe7eb77bd0a5408523a3bdf4fd2e75",
+            "language": "csharp",
+            "definition": {
+              "path": "csharp/declarations.cs",
+              "start_line": 7,
+              "start_column": 19,
+              "start_byte": 180,
+              "end_line": 7,
+              "end_column": 25,
+              "end_byte": 186
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.csharp",
+              "adapter_version": "1.1.0",
+              "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.csharp.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_f30af841ee25d2ce1476e6fc941f3760595eaff3",
+            "kind": "Type",
+            "display_name": "Secondary",
+            "qualified_identity": "Demo.Unicode.Secondary",
+            "signature": "class Secondary",
+            "container_id": null,
+            "language": "csharp",
+            "definition": {
+              "path": "csharp/declarations.cs",
+              "start_line": 11,
+              "start_column": 14,
+              "start_byte": 280,
+              "end_line": 11,
+              "end_column": 23,
+              "end_byte": 289
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.csharp",
+              "adapter_version": "1.1.0",
+              "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.csharp.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_735c282fbb7e44b71a80e276e3128b1eac172234",
+            "kind": "Member",
+            "display_name": "Format",
+            "qualified_identity": "Demo.Unicode.Secondary.Format(int value)",
+            "signature": "public int Format(int value)",
+            "container_id": "cpl_symbol_f30af841ee25d2ce1476e6fc941f3760595eaff3",
+            "language": "csharp",
+            "definition": {
+              "path": "csharp/declarations.cs",
+              "start_line": 13,
+              "start_column": 16,
+              "start_byte": 307,
+              "end_line": 13,
+              "end_column": 22,
+              "end_byte": 313
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.csharp",
+              "adapter_version": "1.1.0",
+              "content_hash": "592022d1f7a3457a1fef1dbc46bf6c5af31f74dbb6f2eb8b0525a96bcf2b4fd7"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.csharp.declaration.v2"
+            }
+          }
+        ],
+        "chunks": [
+          {
+            "id": "cpl_chunk_555b40e420324fe6954ccc8f4caa2f06e5f3ddb0",
+            "file_id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+            "ordinal": 0,
+            "content_hash": "9bd43357a721201430a04601201535a805a517d92b78f5cb658126c28dc3b76e",
+            "content": "class 格式化器<T>\n{\n    public int Format(int value) => value;\n    public string Format(string value) => value;\n    public T Echo<TValue>(TValue value) => default!;\n}",
+            "span": {
+              "path": "csharp/declarations.cs",
+              "start_line": 4,
+              "start_column": 8,
+              "start_byte": 95,
+              "end_line": 9,
+              "end_column": 2,
+              "end_byte": 265
+            },
+            "symbol_id": "cpl_symbol_d1972acc1ffe7eb77bd0a5408523a3bdf4fd2e75"
+          },
+          {
+            "id": "cpl_chunk_d376022e62ddeea5e3de9834940d2fbf737b331e",
+            "file_id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+            "ordinal": 1,
+            "content_hash": "24d0f1fd189dc2a3de09194ec5c3a8aae673b3e3a73b71000ec515f3d44ce099",
+            "content": "public int Format(int value) => value;",
+            "span": {
+              "path": "csharp/declarations.cs",
+              "start_line": 6,
+              "start_column": 5,
+              "start_byte": 123,
+              "end_line": 6,
+              "end_column": 43,
+              "end_byte": 161
+            },
+            "symbol_id": "cpl_symbol_9fa2f6ac19db15649ea7a3df3f9918db2cfcb9cd"
+          },
+          {
+            "id": "cpl_chunk_cf63d091892ca82fd4fb09fe824eff9a99ad4086",
+            "file_id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+            "ordinal": 2,
+            "content_hash": "3dce2a058b373dbb9e2f8b65d7c07668a52443be9458481fcef3248f3493c58c",
+            "content": "public string Format(string value) => value;",
+            "span": {
+              "path": "csharp/declarations.cs",
+              "start_line": 7,
+              "start_column": 5,
+              "start_byte": 166,
+              "end_line": 7,
+              "end_column": 49,
+              "end_byte": 210
+            },
+            "symbol_id": "cpl_symbol_c187e152453c850200bcb880e7abfadf42e3b604"
+          },
+          {
+            "id": "cpl_chunk_06f9c03cf07bfb5c1119db25f83f4aaf4fa00fec",
+            "file_id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+            "ordinal": 3,
+            "content_hash": "d27bb0b877965589ffac23dafaa84be0d21865633b2fb161d89b04dada1bdca1",
+            "content": "class Secondary\n{\n    public int Format(int value) => value;\n}",
+            "span": {
+              "path": "csharp/declarations.cs",
+              "start_line": 11,
+              "start_column": 8,
+              "start_byte": 274,
+              "end_line": 14,
+              "end_column": 2,
+              "end_byte": 336
+            },
+            "symbol_id": "cpl_symbol_f30af841ee25d2ce1476e6fc941f3760595eaff3"
+          },
+          {
+            "id": "cpl_chunk_1d41134411246c407e191f865e10db427edec8d4",
+            "file_id": "cpl_file_32850c16f4ccd6725e3aef118fb7802fa68705b0",
+            "ordinal": 4,
+            "content_hash": "24d0f1fd189dc2a3de09194ec5c3a8aae673b3e3a73b71000ec515f3d44ce099",
+            "content": "public int Format(int value) => value;",
+            "span": {
+              "path": "csharp/declarations.cs",
+              "start_line": 13,
+              "start_column": 5,
+              "start_byte": 296,
+              "end_line": 13,
+              "end_column": 43,
+              "end_byte": 334
+            },
+            "symbol_id": "cpl_symbol_735c282fbb7e44b71a80e276e3128b1eac172234"
+          }
+        ]
+      },
+      {
+        "id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+        "path": "javascript/declarations.js",
+        "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470",
+        "length": 235,
+        "language": "javascript",
+        "semantic_tier": "Partial",
+        "adapter_id": "couplet.lexical.javascript",
+        "adapter_version": "1.1.0",
+        "symbols": [
+          {
+            "id": "cpl_symbol_758317883daf0a7440fd76eb6999bb055d16c17c",
+            "kind": "Type",
+            "display_name": "Formatter",
+            "qualified_identity": "Formatter",
+            "signature": "class Formatter",
+            "container_id": null,
+            "language": "javascript",
+            "definition": {
+              "path": "javascript/declarations.js",
+              "start_line": 2,
+              "start_column": 14,
+              "start_byte": 76,
+              "end_line": 2,
+              "end_column": 23,
+              "end_byte": 85
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.javascript",
+              "adapter_version": "1.1.0",
+              "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.javascript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_4c54b0209f7d15cbde64a64fb8ddb25704b9d0d6",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "Formatter.format(value)",
+            "signature": "format(value)",
+            "container_id": "cpl_symbol_758317883daf0a7440fd76eb6999bb055d16c17c",
+            "language": "javascript",
+            "definition": {
+              "path": "javascript/declarations.js",
+              "start_line": 3,
+              "start_column": 3,
+              "start_byte": 90,
+              "end_line": 3,
+              "end_column": 9,
+              "end_byte": 96
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.javascript",
+              "adapter_version": "1.1.0",
+              "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.javascript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_83f55b10872e407ef9262a05b381e7c166b03f5a",
+            "kind": "Type",
+            "display_name": "Secondary",
+            "qualified_identity": "Secondary",
+            "signature": "class Secondary",
+            "container_id": null,
+            "language": "javascript",
+            "definition": {
+              "path": "javascript/declarations.js",
+              "start_line": 6,
+              "start_column": 14,
+              "start_byte": 138,
+              "end_line": 6,
+              "end_column": 23,
+              "end_byte": 147
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.javascript",
+              "adapter_version": "1.1.0",
+              "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.javascript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_3144bd69c2048f14dd87351f68966afaabd33b5d",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "Secondary.format(value)",
+            "signature": "format(value)",
+            "container_id": "cpl_symbol_83f55b10872e407ef9262a05b381e7c166b03f5a",
+            "language": "javascript",
+            "definition": {
+              "path": "javascript/declarations.js",
+              "start_line": 7,
+              "start_column": 3,
+              "start_byte": 152,
+              "end_line": 7,
+              "end_column": 9,
+              "end_byte": 158
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.javascript",
+              "adapter_version": "1.1.0",
+              "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.javascript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_519533f38610fd6f4894eee9d69f3b47f9a2fb42",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "format(value)",
+            "signature": "export function format(value)",
+            "container_id": null,
+            "language": "javascript",
+            "definition": {
+              "path": "javascript/declarations.js",
+              "start_line": 10,
+              "start_column": 17,
+              "start_byte": 203,
+              "end_line": 10,
+              "end_column": 23,
+              "end_byte": 209
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.javascript",
+              "adapter_version": "1.1.0",
+              "content_hash": "144a57effb4e53fcdec411109a708a1f4d9e28dcf5063a3d91adc7ac06f3c470"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.javascript.declaration.v2"
+            }
+          }
+        ],
+        "chunks": [
+          {
+            "id": "cpl_chunk_8824cfabcfd1c9cc797a6c9bef496d9ccdf903b6",
+            "file_id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+            "ordinal": 0,
+            "content_hash": "219b14405b6a64a6eaec4d1971f791b91b4eb0990e6b93c64402dcb3b54d4a49",
+            "content": "class Formatter {\n  format(value) { return value; }\n}",
+            "span": {
+              "path": "javascript/declarations.js",
+              "start_line": 2,
+              "start_column": 8,
+              "start_byte": 70,
+              "end_line": 4,
+              "end_column": 2,
+              "end_byte": 123
+            },
+            "symbol_id": "cpl_symbol_758317883daf0a7440fd76eb6999bb055d16c17c"
+          },
+          {
+            "id": "cpl_chunk_e9e7e5144b7fdcaccb1ea7943bf415187eaa19a5",
+            "file_id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+            "ordinal": 1,
+            "content_hash": "82f75c3b42c07ee6b8188102a83c9173576a9f535246e060939ed334f0c0cd6a",
+            "content": "format(value) { return value; }",
+            "span": {
+              "path": "javascript/declarations.js",
+              "start_line": 3,
+              "start_column": 3,
+              "start_byte": 90,
+              "end_line": 3,
+              "end_column": 34,
+              "end_byte": 121
+            },
+            "symbol_id": "cpl_symbol_4c54b0209f7d15cbde64a64fb8ddb25704b9d0d6"
+          },
+          {
+            "id": "cpl_chunk_a4b3d128046660b835656d0774dec9c2900853ff",
+            "file_id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+            "ordinal": 2,
+            "content_hash": "b934593b2ee889b4bb475caf46bcef1cbd01ec44083a692b6c0fa26f4f0c4ffb",
+            "content": "class Secondary {\n  format(value) { return value; }\n}",
+            "span": {
+              "path": "javascript/declarations.js",
+              "start_line": 6,
+              "start_column": 8,
+              "start_byte": 132,
+              "end_line": 8,
+              "end_column": 2,
+              "end_byte": 185
+            },
+            "symbol_id": "cpl_symbol_83f55b10872e407ef9262a05b381e7c166b03f5a"
+          },
+          {
+            "id": "cpl_chunk_4ff6dec6c2289525e2cf9241f55611aa895f0bba",
+            "file_id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+            "ordinal": 3,
+            "content_hash": "82f75c3b42c07ee6b8188102a83c9173576a9f535246e060939ed334f0c0cd6a",
+            "content": "format(value) { return value; }",
+            "span": {
+              "path": "javascript/declarations.js",
+              "start_line": 7,
+              "start_column": 3,
+              "start_byte": 152,
+              "end_line": 7,
+              "end_column": 34,
+              "end_byte": 183
+            },
+            "symbol_id": "cpl_symbol_3144bd69c2048f14dd87351f68966afaabd33b5d"
+          },
+          {
+            "id": "cpl_chunk_e2dd1c325d03f83d32825a86e9faa83fce7d1ae0",
+            "file_id": "cpl_file_70b5be4c8774b3e14729af864432d87881d9e2c2",
+            "ordinal": 4,
+            "content_hash": "6e88688b7645028bb0975f482427b799fe7135ea62c4d3c5d8d3d58b22e0159f",
+            "content": "function format(value) { return value; }",
+            "span": {
+              "path": "javascript/declarations.js",
+              "start_line": 10,
+              "start_column": 8,
+              "start_byte": 194,
+              "end_line": 10,
+              "end_column": 48,
+              "end_byte": 234
+            },
+            "symbol_id": "cpl_symbol_519533f38610fd6f4894eee9d69f3b47f9a2fb42"
+          }
+        ]
+      },
+      {
+        "id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+        "path": "typescript/declarations.ts",
+        "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd",
+        "length": 392,
+        "language": "typescript",
+        "semantic_tier": "Partial",
+        "adapter_id": "couplet.lexical.typescript",
+        "adapter_version": "1.1.0",
+        "symbols": [
+          {
+            "id": "cpl_symbol_28c782188e758247eac401e723df5e6fee933fec",
+            "kind": "Type",
+            "display_name": "Formatter",
+            "qualified_identity": "Formatter",
+            "signature": "class Formatter",
+            "container_id": null,
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 2,
+              "start_column": 14,
+              "start_byte": 76,
+              "end_line": 2,
+              "end_column": 23,
+              "end_byte": 85
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_a7253c6ccd17f76111b514ae14fd12cc8878774a",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "Formatter.format(value:number)",
+            "signature": "format(value:number)",
+            "container_id": "cpl_symbol_28c782188e758247eac401e723df5e6fee933fec",
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 3,
+              "start_column": 3,
+              "start_byte": 93,
+              "end_line": 3,
+              "end_column": 9,
+              "end_byte": 99
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_adfaaa90694e7eb3d6550ac378f453e02792bc03",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "Formatter.format(value:string)",
+            "signature": "format(value:string)",
+            "container_id": "cpl_symbol_28c782188e758247eac401e723df5e6fee933fec",
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 4,
+              "start_column": 3,
+              "start_byte": 143,
+              "end_line": 4,
+              "end_column": 9,
+              "end_byte": 149
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_ed492942a8742ee2799c64c86e193ac838c0b6ae",
+            "kind": "Type",
+            "display_name": "Secondary",
+            "qualified_identity": "Secondary",
+            "signature": "class Secondary",
+            "container_id": null,
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 8,
+              "start_column": 14,
+              "start_byte": 263,
+              "end_line": 8,
+              "end_column": 23,
+              "end_byte": 272
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_9f331b073b012a8898bd0074701da4227940e025",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "Secondary.format(value:number)",
+            "signature": "format(value:number)",
+            "container_id": "cpl_symbol_ed492942a8742ee2799c64c86e193ac838c0b6ae",
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 9,
+              "start_column": 3,
+              "start_byte": 277,
+              "end_line": 9,
+              "end_column": 9,
+              "end_byte": 283
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          },
+          {
+            "id": "cpl_symbol_4605bd15a662b3f1a5f990a561baf621d745cc26",
+            "kind": "Member",
+            "display_name": "format",
+            "qualified_identity": "format(value:string)",
+            "signature": "export function format(value:string)",
+            "container_id": null,
+            "language": "typescript",
+            "definition": {
+              "path": "typescript/declarations.ts",
+              "start_line": 12,
+              "start_column": 17,
+              "start_byte": 344,
+              "end_line": 12,
+              "end_column": 23,
+              "end_byte": 350
+            },
+            "provenance": {
+              "workspace_id": "cpl_workspace_c1_language_golden",
+              "source_revision": "source-c1-language-golden-v1",
+              "index_revision": "index-c1-language-golden-v1",
+              "adapter_id": "couplet.lexical.typescript",
+              "adapter_version": "1.1.0",
+              "content_hash": "cefa758f7c6afb0359292b772dc01b6de946bb2f0b0ea9ba0bc9aba8eaf639fd"
+            },
+            "confidence": {
+              "kind": "Inferred",
+              "score": 0.9,
+              "rule": "couplet.lexical.typescript.declaration.v2"
+            }
+          }
+        ],
+        "chunks": [
+          {
+            "id": "cpl_chunk_71fceabc50e84b6865e395816f727c888cd6df53",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 0,
+            "content_hash": "2816e7eabea8ba2db4afea1ae57534a62955b5107a37d7075b17da6ce66bcfbf",
+            "content": "class Formatter<T> {\n  format(value: number): number { return value; }\n  format(value: string): string { return value; }\n  echo<TValue>(value: TValue): TValue { return value; }\n}",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 2,
+              "start_column": 8,
+              "start_byte": 70,
+              "end_line": 6,
+              "end_column": 2,
+              "end_byte": 248
+            },
+            "symbol_id": "cpl_symbol_28c782188e758247eac401e723df5e6fee933fec"
+          },
+          {
+            "id": "cpl_chunk_0f629b08610eeb8290d9859aaf07fefd18bb1fbe",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 1,
+            "content_hash": "99cda2b73cb74a0ebc5627d3924263e62f5ce6854724a3671d0ad8a15b0ccd0c",
+            "content": "format(value: number): number { return value; }",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 3,
+              "start_column": 3,
+              "start_byte": 93,
+              "end_line": 3,
+              "end_column": 50,
+              "end_byte": 140
+            },
+            "symbol_id": "cpl_symbol_a7253c6ccd17f76111b514ae14fd12cc8878774a"
+          },
+          {
+            "id": "cpl_chunk_cdc268f8c945eba956106ad1e2e67c8176305ff9",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 2,
+            "content_hash": "1e588c5c1da31eea469465348cadacaba681d341bb1885713fc98d5d2f53a667",
+            "content": "format(value: string): string { return value; }",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 4,
+              "start_column": 3,
+              "start_byte": 143,
+              "end_line": 4,
+              "end_column": 50,
+              "end_byte": 190
+            },
+            "symbol_id": "cpl_symbol_adfaaa90694e7eb3d6550ac378f453e02792bc03"
+          },
+          {
+            "id": "cpl_chunk_3fcbf42f832d1eeacdadcb11bc7b2d1ad0dafa10",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 3,
+            "content_hash": "684ab7da0475daa9cc5c020f51ae305e880323f8c6bd4f6394ffb6d8d0a3721c",
+            "content": "class Secondary {\n  format(value: number): number { return value; }\n}",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 8,
+              "start_column": 8,
+              "start_byte": 257,
+              "end_line": 10,
+              "end_column": 2,
+              "end_byte": 326
+            },
+            "symbol_id": "cpl_symbol_ed492942a8742ee2799c64c86e193ac838c0b6ae"
+          },
+          {
+            "id": "cpl_chunk_7744338d422b60672312df0109182f04f62433df",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 4,
+            "content_hash": "99cda2b73cb74a0ebc5627d3924263e62f5ce6854724a3671d0ad8a15b0ccd0c",
+            "content": "format(value: number): number { return value; }",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 9,
+              "start_column": 3,
+              "start_byte": 277,
+              "end_line": 9,
+              "end_column": 50,
+              "end_byte": 324
+            },
+            "symbol_id": "cpl_symbol_9f331b073b012a8898bd0074701da4227940e025"
+          },
+          {
+            "id": "cpl_chunk_7f74d763dd3ac567a258b542cb17fc7135277841",
+            "file_id": "cpl_file_26ce2e4e6bf09680fcd1acfb99e46bbc8cd180c0",
+            "ordinal": 5,
+            "content_hash": "ec499fda3c23b253d8146ac7923705c841568b4e2cf187ac99a79d639915b1e6",
+            "content": "function format(value: string): string { return value; }",
+            "span": {
+              "path": "typescript/declarations.ts",
+              "start_line": 12,
+              "start_column": 8,
+              "start_byte": 335,
+              "end_line": 12,
+              "end_column": 64,
+              "end_byte": 391
+            },
+            "symbol_id": "cpl_symbol_4605bd15a662b3f1a5f990a561baf621d745cc26"
+          }
+        ]
+      }
+    ],
+    "failures": []
+  }
+}

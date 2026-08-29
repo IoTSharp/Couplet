@@ -10,6 +10,9 @@ using SonnetDB.Engine.Compaction;
 using SonnetDB.Engine.Retention;
 using SonnetDB.FullText;
 using SonnetDB.Kv;
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+using SonnetDB.Generations;
+#endif
 
 namespace Couplet.Infrastructure.SonnetDb;
 
@@ -20,6 +23,22 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 {
     private const string _controlKeyspaceName = "couplet_control";
     private const string _fullTextIndexName = "code_search";
+    private static readonly string[] _aotMaintenanceLimitations =
+        ["CG-006:sonnetdb_background_maintenance_disabled"];
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private const string _documentsRole = "code_documents";
+    private const string _fullTextRole = "code_search";
+    private const string _planningRole = "index_planning";
+    private const string _planningSnapshotKey = "planning_snapshot";
+    private const string _publishedManifestKey = "generation_manifest";
+    private static readonly string[] _sourceGenerationLimitations =
+        ["CPL-015:retired_generation_retention_policy_not_connected"];
+    private static readonly string[] _cleanupFailureLimitations =
+    [
+        "CPL-015:retired_generation_cleanup_retry_required",
+        "CPL-015:retired_generation_retention_policy_not_connected",
+    ];
+#endif
     private readonly Tsdb _database;
     private readonly KvKeyspace _control;
     private readonly bool _backgroundMaintenanceEnabled;
@@ -34,7 +53,11 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseRoot);
         string root = Path.GetFullPath(databaseRoot);
         Directory.CreateDirectory(root);
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        _backgroundMaintenanceEnabled = true;
+#else
         _backgroundMaintenanceEnabled = RuntimeFeature.IsDynamicCodeSupported;
+#endif
         TsdbOptions options = new() { RootDirectory = root };
         if (!_backgroundMaintenanceEnabled)
         {
@@ -194,6 +217,174 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         StagingGenerationInspection inspection = InspectStaging(workspaceId, indexRevision);
         return inspection.Complete ? inspection.Manifest : null;
     }
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    internal ActiveIndexPlanningSnapshot? ReadActivePlanningSnapshot(string workspaceId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        DatabaseGenerationQueryLease lease;
+        try
+        {
+            lease = _database.Generations.AcquireActive(workspaceId);
+        }
+        catch (DatabaseGenerationException exception)
+            when (exception.Code == DatabaseGenerationErrorCodes.NoActiveGeneration)
+        {
+            return null;
+        }
+
+        using (lease)
+        {
+            DatabaseGenerationResource resource = lease.GetRequiredResource(
+                _planningRole,
+                DatabaseGenerationResourceKind.KvKeyspace);
+            byte[]? payload = _database.Keyspaces.Open(resource.Name).Get(_planningSnapshotKey);
+            if (payload is null)
+            {
+                throw new InvalidDataException("active_index_planning_snapshot_missing");
+            }
+
+            IndexPlanningSnapshot planning;
+            try
+            {
+                planning = CoupletJsonSerializer.DeserializeIndexPlanningSnapshot(
+                    Encoding.UTF8.GetString(payload));
+            }
+            catch (System.Text.Json.JsonException exception)
+            {
+                throw new InvalidDataException("active_index_planning_snapshot_invalid", exception);
+            }
+
+            if (planning.SchemaVersion != Couplet.Core.Contracts.ContractVersions.IndexPlanningSnapshot
+                || !string.Equals(planning.WorkspaceId, workspaceId, StringComparison.Ordinal)
+                || !string.Equals(planning.IndexRevision, lease.Generation.GenerationId, StringComparison.Ordinal)
+                || planning.ProducerVersions.Count == 0
+                || planning.Files.GroupBy(file => file.Path, StringComparer.Ordinal).Any(group => group.Count() != 1))
+            {
+                throw new InvalidDataException("active_index_planning_snapshot_invalid");
+            }
+
+            return new ActiveIndexPlanningSnapshot(lease.Generation.Revision, planning);
+        }
+    }
+
+    internal IndexStageReport StageAndPublish(
+        WorkspaceIndexSnapshot snapshot,
+        IncrementalIndexPlan plan,
+        long expectedDatabaseGenerationRevision,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedDatabaseGenerationRevision);
+        cancellationToken.ThrowIfCancellationRequested();
+        IndexStageReport? noOp = TryReuseActiveGeneration(
+            snapshot,
+            plan,
+            expectedDatabaseGenerationRevision);
+        if (noOp is not null)
+        {
+            return noOp;
+        }
+
+        IndexStageReport staging = Stage(snapshot, plan, cancellationToken);
+        if (!staging.Staged)
+        {
+            return staging;
+        }
+
+        string planningKeyspaceName = PlanningKeyspaceName(snapshot.WorkspaceId, snapshot.IndexRevision);
+        KvKeyspace planningKeyspace = _database.Keyspaces.Open(planningKeyspaceName);
+        IndexPlanningSnapshot planning = IndexPlanningSnapshotMapper.Create(snapshot);
+        GenerationManifest manifest = PublishedManifest(staging.Manifest);
+        planningKeyspace.Put(
+            _planningSnapshotKey,
+            Encoding.UTF8.GetBytes(CoupletJsonSerializer.Serialize(planning)));
+        planningKeyspace.Put(
+            _publishedManifestKey,
+            Encoding.UTF8.GetBytes(CoupletJsonSerializer.Serialize(manifest)));
+        planningKeyspace.CreateSnapshot();
+
+        DatabaseGeneration generation = _database.Generations.Publish(
+            new DatabaseGenerationPublishRequest
+            {
+                Stream = snapshot.WorkspaceId,
+                GenerationId = snapshot.IndexRevision,
+                ExpectedRevision = expectedDatabaseGenerationRevision,
+                Resources =
+                [
+                    new DatabaseGenerationResource(
+                        _planningRole,
+                        DatabaseGenerationResourceKind.KvKeyspace,
+                        planningKeyspaceName),
+                    new DatabaseGenerationResource(
+                        _documentsRole,
+                        DatabaseGenerationResourceKind.DocumentCollection,
+                        staging.CollectionName),
+                    new DatabaseGenerationResource(
+                        _fullTextRole,
+                        DatabaseGenerationResourceKind.DocumentFullTextIndex,
+                        _fullTextIndexName,
+                        staging.CollectionName),
+                ],
+            },
+            cancellationToken);
+
+        // Publication has committed. Finish best-effort retirement deterministically instead of
+        // surfacing cancellation as if the new generation had not become active.
+        CleanupOutcome cleanup = CleanupAfterPublish(snapshot.WorkspaceId);
+        return Report(
+            manifest,
+            staging.CollectionName,
+            staged: true,
+            problems: cleanup.Problems,
+            published: true,
+            databaseGenerationRevision: generation.Revision,
+            removedGenerationRevisions: cleanup.RemovedGenerationRevisions,
+            deferredGenerationRevisions: cleanup.DeferredGenerationRevisions,
+            additionalLimitations: cleanup.Limitations);
+    }
+
+    internal DatabaseGenerationQueryLease AcquireActiveGeneration(string workspaceId)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        return _database.Generations.AcquireActive(workspaceId);
+    }
+
+    internal DatabaseGenerationCleanupResult CleanupRetired(
+        string workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        if (CleanupRetiredTestHook is not null)
+        {
+            return CleanupRetiredTestHook(workspaceId, cancellationToken);
+        }
+
+        Dictionary<long, string> generationIds = _database.Generations.List(workspaceId)
+            .ToDictionary(generation => generation.Revision, generation => generation.GenerationId);
+        DatabaseGenerationCleanupResult cleanup = _database.Generations.CleanupRetired(
+            workspaceId,
+            cancellationToken);
+        foreach (long revision in cleanup.RemovedRevisions)
+        {
+            if (generationIds.TryGetValue(revision, out string? indexRevision))
+            {
+                _control.Delete(StagingKey(workspaceId, indexRevision));
+            }
+        }
+
+        if (cleanup.RemovedRevisions.Count != 0)
+        {
+            _control.CreateSnapshot();
+        }
+
+        return cleanup;
+    }
+
+    internal Func<string, CancellationToken, DatabaseGenerationCleanupResult>? CleanupRetiredTestHook { get; set; }
+#endif
 
     /// <summary>
     /// 检查一个 staging generation 在当前进程或重开后是否仍完整且不可发布。
@@ -373,16 +564,29 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         GenerationManifest manifest,
         string collectionName,
         bool staged,
-        IReadOnlyList<string> problems) => new()
+        IReadOnlyList<string> problems,
+        bool published = false,
+        long? databaseGenerationRevision = null,
+        IReadOnlyList<long>? removedGenerationRevisions = null,
+        IReadOnlyList<long>? deferredGenerationRevisions = null,
+        bool reusedActiveGeneration = false,
+        IReadOnlyList<string>? additionalLimitations = null) => new()
         {
             Manifest = manifest,
             CollectionName = collectionName,
             Staged = staged,
-            Published = false,
-            BlockingGap = "CG-005",
-            Limitations = _backgroundMaintenanceEnabled
-                ? []
-                : ["CG-006:sonnetdb_background_maintenance_disabled"],
+            Published = published,
+            ReusedActiveGeneration = reusedActiveGeneration,
+            DatabaseGenerationRevision = databaseGenerationRevision,
+            BlockingGap = published ? null : "CG-005",
+            RemovedGenerationRevisions = removedGenerationRevisions ?? [],
+            DeferredGenerationRevisions = deferredGenerationRevisions ?? [],
+            Limitations = (_backgroundMaintenanceEnabled
+                    ? Array.Empty<string>()
+                    : _aotMaintenanceLimitations)
+                .Concat(additionalLimitations ?? [])
+                .Order(StringComparer.Ordinal)
+                .ToArray(),
             Problems = problems,
         };
 
@@ -414,6 +618,126 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
         return "cplg_" + digest[..32];
     }
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private IndexStageReport? TryReuseActiveGeneration(
+        WorkspaceIndexSnapshot snapshot,
+        IncrementalIndexPlan plan,
+        long expectedDatabaseGenerationRevision)
+    {
+        if (expectedDatabaseGenerationRevision == 0
+            || plan.RebuildRequired
+            || plan.Changes.Any(change => change.Kind != IndexFileChangeKind.Unchanged))
+        {
+            return null;
+        }
+
+        using DatabaseGenerationQueryLease lease = _database.Generations.AcquireActive(snapshot.WorkspaceId);
+        if (lease.Generation.Revision != expectedDatabaseGenerationRevision
+            || !string.Equals(lease.Generation.GenerationId, plan.PreviousIndexRevision, StringComparison.Ordinal))
+        {
+            throw new DatabaseGenerationException(
+                DatabaseGenerationErrorCodes.RevisionConflict,
+                "Active generation changed before the no-op index run completed.");
+        }
+
+        DatabaseGenerationResource planningResource = lease.GetRequiredResource(
+            _planningRole,
+            DatabaseGenerationResourceKind.KvKeyspace);
+        KvKeyspace planningKeyspace = _database.Keyspaces.Open(planningResource.Name);
+        byte[]? snapshotBytes = planningKeyspace.Get(_planningSnapshotKey);
+        byte[]? manifestBytes = planningKeyspace.Get(_publishedManifestKey);
+        if (snapshotBytes is null || manifestBytes is null)
+        {
+            throw new InvalidDataException("active_index_planning_metadata_missing");
+        }
+
+        IndexPlanningSnapshot activeSnapshot;
+        GenerationManifest activeManifest;
+        try
+        {
+            activeSnapshot = CoupletJsonSerializer.DeserializeIndexPlanningSnapshot(
+                Encoding.UTF8.GetString(snapshotBytes));
+            activeManifest = CoupletJsonSerializer.DeserializeGenerationManifest(
+                Encoding.UTF8.GetString(manifestBytes));
+        }
+        catch (System.Text.Json.JsonException exception)
+        {
+            throw new InvalidDataException("active_index_planning_metadata_invalid", exception);
+        }
+
+        if (!string.Equals(activeSnapshot.SourceRevision, snapshot.SourceRevision, StringComparison.Ordinal)
+            || !activeSnapshot.ProducerVersions.SequenceEqual(snapshot.ProducerVersions, StringComparer.Ordinal)
+            || activeManifest.State != GenerationState.Published
+            || !string.Equals(activeManifest.IndexRevision, lease.Generation.GenerationId, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        DatabaseGenerationResource documents = lease.GetRequiredResource(
+            _documentsRole,
+            DatabaseGenerationResourceKind.DocumentCollection);
+        CleanupOutcome cleanup = CleanupAfterPublish(snapshot.WorkspaceId);
+        return Report(
+            activeManifest,
+            documents.Name,
+            staged: true,
+            problems: cleanup.Problems,
+            published: true,
+            databaseGenerationRevision: lease.Generation.Revision,
+            removedGenerationRevisions: cleanup.RemovedGenerationRevisions,
+            deferredGenerationRevisions: cleanup.DeferredGenerationRevisions,
+            reusedActiveGeneration: true,
+            additionalLimitations: cleanup.Limitations);
+    }
+
+    private CleanupOutcome CleanupAfterPublish(string workspaceId)
+    {
+        try
+        {
+            DatabaseGenerationCleanupResult cleanup = CleanupRetired(
+                workspaceId,
+                CancellationToken.None);
+            return new CleanupOutcome(
+                cleanup.RemovedRevisions,
+                cleanup.DeferredRevisions,
+                [],
+                _sourceGenerationLimitations);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or DatabaseGenerationException)
+        {
+            return new CleanupOutcome(
+                [],
+                [],
+                ["retired_generation_cleanup_failed"],
+                _cleanupFailureLimitations);
+        }
+    }
+
+    private static string PlanningKeyspaceName(string workspaceId, string indexRevision)
+    {
+        string value = "planning\0" + workspaceId + "\0" + indexRevision;
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        return "cplk_" + digest[..32];
+    }
+
+    private static GenerationManifest PublishedManifest(GenerationManifest manifest) => new()
+    {
+        SchemaVersion = manifest.SchemaVersion,
+        WorkspaceId = manifest.WorkspaceId,
+        SourceRevision = manifest.SourceRevision,
+        IndexRevision = manifest.IndexRevision,
+        PreviousIndexRevision = manifest.PreviousIndexRevision,
+        CodeGraphSchemaVersion = manifest.CodeGraphSchemaVersion,
+        ProducerVersions = manifest.ProducerVersions,
+        Counts = manifest.Counts,
+        Checksum = manifest.Checksum,
+        State = GenerationState.Published,
+        CreatedAtUtc = manifest.CreatedAtUtc,
+    };
+#endif
 }
 
 internal sealed record StagingQueryProbeResult(
@@ -421,3 +745,15 @@ internal sealed record StagingQueryProbeResult(
     long? Candidates,
     long? Examined,
     IReadOnlyList<IndexStorageDocument> Documents);
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+internal sealed record ActiveIndexPlanningSnapshot(
+    long DatabaseGenerationRevision,
+    IndexPlanningSnapshot PlanningSnapshot);
+
+internal sealed record CleanupOutcome(
+    IReadOnlyList<long> RemovedGenerationRevisions,
+    IReadOnlyList<long> DeferredGenerationRevisions,
+    IReadOnlyList<string> Problems,
+    IReadOnlyList<string> Limitations);
+#endif

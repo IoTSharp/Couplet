@@ -13,8 +13,8 @@
 | 原生属性图无旁路决策 | ✅ 已完成 | ADR 0002、`docs/capability-gaps.md` |
 | 性能缺口优先回收决策 | ✅ 已完成 | ADR 0003、`docs/quality-gates.md` |
 | Couplet C0 基础与合同 | ✅ 已完成 | 版本化 graph/generation/security/MCP 合同、fixture/eval runner、35 个自动化测试和 stdio smoke |
-| Couplet 可执行产品 | 🚧 C1 实现中 | workspace discovery、partial adapters 和 Document/FullText staging 可运行；原子发布/查询与 AOT 后台维护受 CG-005/CG-006 阻塞 |
-| SonnetDB 原生属性图 | 🚧 package API 可联调 | 固定 `SonnetDB.Core 3.1.0` 已含公开 `GraphStore`；M40/Couplet 联合门禁尚未通过 |
+| Couplet 可执行产品 | 🚧 C1 实现中 | source generation 原子发布已接线且 Native AOT publish/no-op smoke 已重跑；MCP active query、retention/fault/capacity 与 7 天长稳仍受门禁约束，默认 package AOT 仍受限 |
+| SonnetDB 最新源码联调 | 🚧 generation API 已接线 | 显式 source ProjectReference 已接入 `Tsdb.Generations`；默认 `SonnetDB.Core 3.1.0` package 仍作为独立构建基线，M40/Couplet 联合门禁尚未通过 |
 
 状态符号只描述本行结果；“路线已完成”不等于“路线中的产品能力已完成”。
 
@@ -35,7 +35,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 | Couplet 阶段 | 使用的 SonnetDB 能力 | 联调/开发开始条件 | 联合退出/发布门禁 | 未通过时的行为 |
 |---|---|---|---|---|
 | C0 | 嵌入式数据库生命周期与稳定 API | 仓库/路线基线已建立 | Couplet 合同/eval runner 与 M40 `#341` workload/SLO 同时冻结 | ✅ 已冻结 `c0-handshake.v1`；不宣称图能力 |
-| C1 | KV、Document、FullText、generation/snapshot/recovery | C0 合同可供实现；公开模型 API 可用 | `#343/#346` 所需 Core 合同与 Couplet revision/crash/capacity gate 全 PASS | 仅开发 parser/fixture 或开放已有证据的能力，不宣称原子增量索引完成 |
+| C1 | KV、Document、FullText、generation/snapshot/recovery | 最新源码 `Tsdb.Generations` public API 可用 | Couplet revision/crash/cursor/retention/capacity gate 全 PASS | source lane 可继续发布/租约联调；MCP 与发布门禁未通过时不开放索引查询 |
 | C2 | 原生 GraphStore、邻接、属性索引、流式路径和诊断 | M40 `#347~#351` 目标 public API 可联调 | M40 `#352` 与 Couplet C2 correctness/performance 同时 PASS，才发布 Preview | 图工具保持 unavailable/内部联调，不做关系表或内存遍历降级 |
 | C3 | FullText、Vector、Graph 的共享 typed hybrid plan | M40 `#353~#358` 目标 API 与相关 M35/M36 能力可联调 | M40 `#359` 与 Couplet C3 Agent/检索 gate 同时 PASS，才发布 Beta | 不在 Couplet 内合并候选或扩图，不隐藏 scan fallback |
 | C4 | 生产图快照、维护、恢复和固定硬件容量 | M40 `#360~#366` 目标能力可联调 | M40 `#367` 与 Couplet C4 长稳/安全/容量 gate 同时 PASS，才发布 1.0 | 不发布 Production/GA，不提高默认资源上限掩盖缺口 |
@@ -74,11 +74,11 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 交付物：
 
 - **CPL-010**：✅ 已实现工作区发现、canonical path、Git revision/branch/worktree、Git ignore、deny/ignore 优先级、symlink 边界、binary/generated file 和大文件 text-only 策略。
-- **CPL-011**：✅ 已实现可替换语言适配器与 Semantic Tier；首批 C#、TypeScript/JavaScript 明确为 lexical `Partial`，unsupported/large input 明确为 `TextOnly`，不宣称完整语义。
-- **CPL-012**：✅ 已实现 stable file/symbol/chunk ID、UTF-8 byte/line/column source span、content hash、provenance、adapter version、confidence 和符号边界 chunk。
-- **CPL-013**：🚧 已实现初次 snapshot、文件监听、content-hash rename、修改/删除、producer upgrade，以及真实 Git branch/HEAD switch 强制全量重建与隔离 staging；一个 revision 原子发布、branch switch 查询可见性和 query lease 受 CG-005 阻塞。
-- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；`workspace_status`、`code_search`、`symbol_get` 不读取 staging，仍返回 `generation_publish_blocked`。
-- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker 写入顺序、missing/corrupt marker 拒绝、checkpoint budget 安全 retry、staging consistency/reopen 和 schema/parser 确定性重建；发布点 crash/reopen、cursor 连续性与 retired generation 清理受 CG-005 阻塞。
+- **CPL-011**：✅ 已实现可替换语言适配器与 Semantic Tier；首批 C#、TypeScript/JavaScript 明确为 lexical `Partial`，unsupported/large input 明确为 `TextOnly`，不宣称完整语义；版本化 C1 fixture 冻结同名、重载和当前不支持 generic method 的边界，lexical adapter `1.1.0` 将声明 confidence 固定为 `Inferred/0.9`。
+- **CPL-012**：✅ 已实现 stable file/symbol/chunk ID、UTF-8 byte/line/column source span、content hash、provenance、adapter version、confidence 和符号边界 chunk；完整 golden snapshot 覆盖三种语言与 Unicode source evidence。
+- **CPL-013**：🚧 已实现初次 snapshot、文件监听、content-hash rename、修改/删除、producer/branch rebuild 判定和跨分支隔离。source lane runtime 从 active generation 读取轻量 planning snapshot，传递真实 previous revision，并以 no-op 复用无变化 active generation；默认 package lane 仍只做全量 staging。
+- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；source lane 将 planning KV、Document 与 FullText 原子发布。`workspace_status`、`code_search`、`symbol_get` 尚未绑定 active query lease，仍返回 unavailable。
+- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker、checkpoint retry、staging consistency/reopen，以及 source lane publish/reopen、generation-bound cursor、writer fence、lease-aware retired cleanup 和 cleanup failure 隔离回归。当前 cleanup 对无租约 generation 立即执行，尚未接入 `RetiredGenerationRetention`；publish 前后进程故障、MCP cursor continuity 和容量回归未完成。
 
 退出门禁：
 
@@ -88,7 +88,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - Codex 与 Claude Code 能读取相同合同，所有结果都可回到文件、revision 和 source span。
 - SonnetDB `#343/#346` 所需 snapshot lease/cursor/recovery public contract 与 Couplet generation 发布、query lease 和清理回归同时通过；对应 CG-005 关闭。
 
-状态：🚧 实现中（2026-08-25）。CPL-010~012 已落地，CPL-013~015 的 branch-switch、恢复检查和安全 staging 部分已有自动化与真实 SonnetDB 证据；Medium/Large 已完成一次真实 characterization，但首次/增量/内存和证据完整性门禁为 FAIL。Correctness/Recovery 和 Performance/Capacity 均未 PASS，发布需关闭 CG-005，Native AOT 长期后台维护另受 CG-006 阻塞。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
+状态：🚧 实现中（2026-08-29）。CPL-010~012 已落地；CPL-013~015 的 source lane generation publish/acquire/cursor/cleanup、writer fence 与 no-op/reopen 小型回归已实现，`CG-005` 进入 verifying。MCP、retention policy、publish fault、双客户端和 Medium/Large 联合门禁仍未通过；Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。默认 3.1.0 package 的 Native AOT 仍报告 CG-006，source lane 使用已修复的 worker 生命周期但当前证据待统一重跑。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
 
 ## C2：原生图代码智能
 

@@ -52,6 +52,7 @@ namespace Couplet.Application.Serialization;
 [JsonSerializable(typeof(WorkspaceDiscoveryResult))]
 [JsonSerializable(typeof(WorkspaceChangeBatch))]
 [JsonSerializable(typeof(WorkspaceIndexSnapshot))]
+[JsonSerializable(typeof(IndexPlanningSnapshot))]
 [JsonSerializable(typeof(IncrementalIndexPlan))]
 [JsonSerializable(typeof(IndexStorageDocument))]
 [JsonSerializable(typeof(IndexStageReport))]

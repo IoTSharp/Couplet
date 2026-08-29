@@ -18,7 +18,7 @@ CPL-007 提供可独立 restore/build/test 的 .NET 10 solution、固定 SonnetD
 |---|---|---|
 | `Couplet.Core` | graph/generation/security/MCP/eval/capability DTO 与稳定算法 | BCL |
 | `Couplet.Application` | schema、协议校验/host、evidence/fixture runner、命令和生命周期 | `Couplet.Core` |
-| `Couplet.Infrastructure.SonnetDb` | SonnetDB 固定 package capability probe 与 composition root | Application、Core、`SonnetDB.Core 3.1.0` |
+| `Couplet.Infrastructure.SonnetDb` | SonnetDB 默认 package / opt-in source capability probe 与 composition root | Application、Core、`SonnetDB.Core` |
 | `Couplet.Cli` | 命令行进程边界 | SonnetDB adapter |
 | `Couplet.Daemon` | 可取消的本地长运行进程边界 | SonnetDB adapter |
 | `Couplet.McpServer` | typed read-only MCP stdio 进程边界 | SonnetDB adapter |
@@ -33,8 +33,8 @@ SonnetDB 不引用 Couplet。adapter 只使用公开类型和程序集元数据�
 - 官方 package content hash 和 informational commit：见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
 - restore cache：仓库内已忽略的 `artifacts/nuget`；不读取或修改用户全局 NuGet cache。
 - public API：KV snapshot、Document、FullText、Vector、Native Graph、path budgets 和 diagnostics 可用于后续联调；release level 继续为 unavailable。
-- 未满足能力：跨模型 generation 原子发布和公开 shared typed hybrid plan，分别由 CG-005、CG-002 阻塞。
-- 旧 `3.0.1` package 和临时 source `ProjectReference` 均已退出 dependency graph。
+- 未满足能力：source generation 已接线但完整 C1 联合门禁仍由 CG-005 阻塞；公开 shared typed hybrid plan 由 CG-002 阻塞。
+- 旧 `3.0.1` package 已退出 dependency graph；默认 lane 固定 3.1.0，受测的 `UseSonnetDbSource=true` lane 用于最新源码联合门禁且使用独立 lock。
 
 ## 4. 依赖与许可证
 
@@ -42,7 +42,7 @@ Couplet 仓库自身尚未决定许可证；下表只记录依赖的上游许可
 
 | 范围 | 依赖 | 固定版本 | 上游许可证 | trim/AOT 风险 |
 |---|---|---|---|---|
-| runtime | `SonnetDB.Core` | `3.1.0` | MIT | 声明 trim/AOT compatible；C1 AOT staging 在关闭不兼容 background workers 后通过，默认 worker dispose 受 CG-006 阻塞 |
+| runtime | `SonnetDB.Core` | 默认 `3.1.0`；opt-in latest source | MIT | package AOT staging 关闭不兼容 worker；source win-x64 CLI publish/no-op smoke 与 Core worker shutdown 已验证，长稳待归档 |
 | transitive runtime | `System.IO.Hashing` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | transitive runtime | `System.Numerics.Tensors` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | test only | `Microsoft.NET.Test.Sdk` | `18.8.1` | MIT | 不进入生产输出 |
@@ -70,7 +70,7 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
-| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index staging | PASS | PASS with CG-006 limitation | 否 | 无 generation publish/query；AOT SonnetDB background maintenance disabled |
+| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish，MCP/retention/fault/capacity 未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
 | `Couplet.McpServer` | typed stdio/schema/unavailable tools | PASS | PASS | 否 | 无可查询 generation，八工具产品能力 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |

@@ -148,6 +148,35 @@
         "failures": { "type": "array", "items": { "$ref": "#/$defs/file_failure" } }
       }
     },
+    "index_planning_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_hash", "semantic_tier", "adapter_id", "adapter_version"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "semantic_tier": { "enum": ["Exact", "Partial", "TextOnly", "Unsupported"] },
+        "adapter_id": { "type": "string", "minLength": 1 },
+        "adapter_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "index_planning_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "workspace_id", "source_revision", "index_revision", "producer_versions", "files"],
+      "properties": {
+        "schema_version": { "const": "couplet.index_planning_snapshot.v1" },
+        "workspace_id": { "type": "string", "minLength": 1 },
+        "repository_identity": { "type": ["string", "null"] },
+        "worktree_identity": { "type": ["string", "null"] },
+        "branch": { "type": ["string", "null"] },
+        "head_revision": { "type": ["string", "null"] },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "index_revision": { "type": "string", "minLength": 1 },
+        "producer_versions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "files": { "type": "array", "items": { "$ref": "#/$defs/index_planning_file" } }
+      }
+    },
     "file_change": {
       "type": "object",
       "additionalProperties": false,
@@ -201,21 +230,25 @@
         "producer_versions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "counts": { "$ref": "#/$defs/generation_counts" },
         "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "state": { "const": "Staging" },
+        "state": { "enum": ["Staging", "Published", "Retired", "Deleted"] },
         "created_at_utc": { "type": "string", "format": "date-time" }
       }
     },
     "stage_report": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "manifest", "collection_name", "staged", "published", "problems"],
+      "required": ["schema_version", "manifest", "collection_name", "staged", "published", "reused_active_generation", "database_generation_revision", "removed_generation_revisions", "deferred_generation_revisions", "limitations", "problems"],
       "properties": {
         "schema_version": { "const": "couplet.index_stage.v1" },
         "manifest": { "$ref": "#/$defs/generation_manifest" },
         "collection_name": { "type": "string", "pattern": "^cplg_[0-9a-f]{32}$" },
         "staged": { "type": "boolean" },
-        "published": { "const": false },
-        "blocking_gap": { "const": "CG-005" },
+        "published": { "type": "boolean" },
+        "reused_active_generation": { "type": "boolean" },
+        "database_generation_revision": { "type": ["integer", "null"], "minimum": 1 },
+        "blocking_gap": { "type": ["string", "null"] },
+        "removed_generation_revisions": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+        "deferred_generation_revisions": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
         "limitations": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "problems": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       }

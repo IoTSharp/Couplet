@@ -168,8 +168,16 @@ public sealed class IndexStageReport
     public required bool Staged { get; init; }
     /// <summary>获取 generation 是否已公开发布。</summary>
     public required bool Published { get; init; }
+    /// <summary>获取本次命令是否复用了未发生变化的 active generation。</summary>
+    public bool ReusedActiveGeneration { get; init; }
+    /// <summary>获取 SonnetDB generation stream 的单调 revision；仅发布后有值。</summary>
+    public long? DatabaseGenerationRevision { get; init; }
     /// <summary>获取阻塞发布的 capability gap。</summary>
     public string? BlockingGap { get; init; }
+    /// <summary>获取本次发布后已清理的 retired database generation revisions。</summary>
+    public IReadOnlyList<long> RemovedGenerationRevisions { get; init; } = [];
+    /// <summary>获取因查询租约仍存活而延后清理的 database generation revisions。</summary>
+    public IReadOnlyList<long> DeferredGenerationRevisions { get; init; } = [];
     /// <summary>获取不影响本次 staging 完整性但限制运行模式的稳定能力说明。</summary>
     public IReadOnlyList<string> Limitations { get; init; } = [];
     /// <summary>获取稳定排序的问题码。</summary>

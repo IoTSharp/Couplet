@@ -180,7 +180,7 @@ public sealed class C1WorkspaceAndIndexingTests
         Assert.Equal(SemanticTier.Partial, file.SemanticTier);
         IndexedSymbol type = Assert.Single(file.Symbols, symbol => symbol.QualifiedIdentity == typeIdentity);
         IndexedSymbol member = Assert.Single(file.Symbols, symbol => symbol.QualifiedIdentity == memberIdentity);
-        Assert.Equal(ConfidenceKind.Exact, type.Confidence.Kind);
+        Assert.Equal(ConfidenceKind.Inferred, type.Confidence.Kind);
         Assert.Equal(type.Id, member.ContainerId);
         Assert.Equal(type.DisplayName, Utf8Slice(content, type.Definition));
         Assert.Equal(member.DisplayName, Utf8Slice(content, member.Definition));
@@ -229,6 +229,45 @@ public sealed class C1WorkspaceAndIndexingTests
 
         IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(previous, current);
 
+        Assert.True(plan.RebuildRequired);
+        Assert.Equal("producer_version_changed", plan.RebuildReason);
+        Assert.All(plan.Changes, change => Assert.Equal(IndexFileChangeKind.Added, change.Kind));
+    }
+
+    [Fact]
+    public void Plan_WithPersistedLexicalProducerVersion100_ReturnsProducerVersionChangedContract()
+    {
+        string[] currentVersions = BuiltinLanguageAdapters.All
+            .Select(adapter => adapter.Capability.AdapterId + "@" + adapter.Capability.AdapterVersion)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        string[] previousVersions = currentVersions
+            .Select(version => version.Replace("@1.1.0", "@1.0.0", StringComparison.Ordinal))
+            .ToArray();
+        WorkspaceIndexSnapshot previous = new()
+        {
+            WorkspaceId = "workspace",
+            SourceRevision = "source-1",
+            IndexRevision = "index-1",
+            ProducerVersions = previousVersions,
+            Files = [IndexedFileFor("a.cs", "hash-a")],
+            Failures = [],
+        };
+        WorkspaceIndexSnapshot current = new()
+        {
+            WorkspaceId = previous.WorkspaceId,
+            SourceRevision = "source-2",
+            IndexRevision = "index-2",
+            PreviousIndexRevision = previous.IndexRevision,
+            ProducerVersions = currentVersions,
+            Files = [IndexedFileFor("a.cs", "hash-a")],
+            Failures = [],
+        };
+
+        IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(previous, current);
+
+        Assert.All(currentVersions, version => Assert.EndsWith("@1.1.0", version, StringComparison.Ordinal));
+        Assert.All(previousVersions, version => Assert.EndsWith("@1.0.0", version, StringComparison.Ordinal));
         Assert.True(plan.RebuildRequired);
         Assert.Equal("producer_version_changed", plan.RebuildReason);
         Assert.All(plan.Changes, change => Assert.Equal(IndexFileChangeKind.Added, change.Kind));

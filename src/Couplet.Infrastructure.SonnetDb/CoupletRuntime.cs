@@ -7,6 +7,9 @@ using Couplet.Core.Capabilities;
 using Couplet.Core.Evaluation;
 using Couplet.Core.Indexing;
 using Couplet.Core.Workspaces;
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+using SonnetDB.Generations;
+#endif
 
 namespace Couplet.Infrastructure.SonnetDb;
 
@@ -159,13 +162,47 @@ public static class CoupletRuntime
                 return await WriteIndexErrorAsync(error, "explicit_database_required").ConfigureAwait(false);
             }
 
+            using IndexWriterFence writerFence = await IndexWriterFence.AcquireAsync(
+                databasePath,
+                workspace.Result.WorkspaceId,
+                cancellationToken).ConfigureAwait(false);
+            string lockedWorkspaceId = workspace.Result.WorkspaceId;
+            workspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspacePath,
+                policy,
+                cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(
+                    lockedWorkspaceId,
+                    workspace.Result.WorkspaceId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("workspace_identity_changed_while_waiting_for_writer");
+            }
+
+            using var store = new SonnetDbIndexGenerationStore(databasePath);
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+            ActiveIndexPlanningSnapshot? active = store.ReadActivePlanningSnapshot(
+                workspace.Result.WorkspaceId);
+            WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
+                workspace,
+                active?.PlanningSnapshot.IndexRevision,
+                cancellationToken).ConfigureAwait(false);
+            IncrementalIndexPlan plan = IncrementalIndexPlanner.PlanFromPublished(
+                active?.PlanningSnapshot,
+                snapshot);
+            IndexStageReport report = store.StageAndPublish(
+                snapshot,
+                plan,
+                active?.DatabaseGenerationRevision ?? 0,
+                cancellationToken);
+#else
             WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
                 workspace,
                 previousIndexRevision: null,
                 cancellationToken).ConfigureAwait(false);
             IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(previous: null, snapshot);
-            using var store = new SonnetDbIndexGenerationStore(databasePath);
             IndexStageReport report = store.Stage(snapshot, plan, cancellationToken);
+#endif
             await output.WriteLineAsync(CoupletJsonSerializer.Serialize(report)).ConfigureAwait(false);
             return report.Staged ? 0 : 1;
         }
@@ -181,6 +218,12 @@ public static class CoupletRuntime
         {
             return await WriteIndexErrorAsync(error, "index_io_failed").ConfigureAwait(false);
         }
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        catch (DatabaseGenerationException exception)
+        {
+            return await WriteIndexErrorAsync(error, exception.Code).ConfigureAwait(false);
+        }
+#endif
     }
 
     private static async Task<int> RunC1CapacityAsync(

@@ -24,7 +24,11 @@ public sealed class ExecutableStartupTests
         Assert.Equal("cpl-007.capabilities.v1", root.GetProperty("schema_version").GetString());
         Assert.Equal("cli", root.GetProperty("component").GetString());
         Assert.Equal("capability_unavailable", root.GetProperty("overall_state").GetString());
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        Assert.Equal("source_project", root.GetProperty("sonnet_db_core").GetProperty("mode").GetString());
+#else
         Assert.Equal("fixed_package", root.GetProperty("sonnet_db_core").GetProperty("mode").GetString());
+#endif
         Assert.Equal("available", root.GetProperty("sonnet_db_core").GetProperty("state").GetString());
         Assert.True(root.GetProperty("sonnet_db_core").GetProperty("graph_api_present").GetBoolean());
     }

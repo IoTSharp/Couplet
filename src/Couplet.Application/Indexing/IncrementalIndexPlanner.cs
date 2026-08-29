@@ -16,6 +16,21 @@ public static class IncrementalIndexPlanner
     /// <returns>稳定排序的变化计划。</returns>
     public static IncrementalIndexPlan Plan(WorkspaceIndexSnapshot? previous, WorkspaceIndexSnapshot current)
     {
+        return PlanFromPublished(
+            previous is null ? null : IndexPlanningSnapshotMapper.Create(previous),
+            current);
+    }
+
+    /// <summary>
+    /// 使用已发布 generation 内的轻量规划 snapshot 计算文件变化。
+    /// </summary>
+    /// <param name="previous">前一 active generation 的规划 snapshot；首次构建时为空。</param>
+    /// <param name="current">目标完整 snapshot。</param>
+    /// <returns>稳定排序的变化计划。</returns>
+    public static IncrementalIndexPlan PlanFromPublished(
+        IndexPlanningSnapshot? previous,
+        WorkspaceIndexSnapshot current)
+    {
         ArgumentNullException.ThrowIfNull(current);
         if (previous is not null
             && !string.Equals(previous.WorkspaceId, current.WorkspaceId, StringComparison.Ordinal))
@@ -55,8 +70,9 @@ public static class IncrementalIndexPlanner
             };
         }
 
-        Dictionary<string, IndexedFile> oldByPath = previous.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
-        Dictionary<string, IndexedFile> newByPath = current.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
+        IndexPlanningSnapshot currentPlanning = IndexPlanningSnapshotMapper.Create(current);
+        Dictionary<string, IndexPlanningFile> oldByPath = previous.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
+        Dictionary<string, IndexPlanningFile> newByPath = currentPlanning.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
         var changes = new List<IndexFileChange>();
         var added = newByPath.Keys.Except(oldByPath.Keys, StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
         var deleted = oldByPath.Keys.Except(newByPath.Keys, StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
@@ -81,8 +97,8 @@ public static class IncrementalIndexPlanner
 
         foreach (string path in oldByPath.Keys.Intersect(newByPath.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal))
         {
-            IndexedFile oldFile = oldByPath[path];
-            IndexedFile newFile = newByPath[path];
+            IndexPlanningFile oldFile = oldByPath[path];
+            IndexPlanningFile newFile = newByPath[path];
             bool unchanged = oldFile.ContentHash == newFile.ContentHash
                 && oldFile.AdapterId == newFile.AdapterId
                 && oldFile.AdapterVersion == newFile.AdapterVersion
