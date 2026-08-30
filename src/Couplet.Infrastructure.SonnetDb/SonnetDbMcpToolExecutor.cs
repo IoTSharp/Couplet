@@ -1,4 +1,5 @@
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text;
 using Couplet.Application.Mcp;
@@ -11,6 +12,8 @@ namespace Couplet.Infrastructure.SonnetDb;
 
 internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
 {
+    private const int CursorStateLength = sizeof(long);
+    private const int MaxCursorLength = 4096;
     private static readonly IReadOnlyList<string> _blockingGaps = ["CG-005"];
     private readonly long _databaseBytesAtStartup;
     private readonly SonnetDbIndexGenerationStore _store;
@@ -260,16 +263,67 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
         string correlationId,
         CancellationToken cancellationToken)
     {
+        string queryFingerprint = CreateCodeSearchFingerprint(search);
+        long offset = 0;
         if (search.Cursor is not null)
         {
-            return Error(
-                McpErrorCodes.CapabilityUnavailable,
-                "query_cursor_not_connected",
-                true,
-                activeBinding,
-                correlationId,
-                "workspace.index",
-                "CG-005");
+            if (string.IsNullOrWhiteSpace(search.Cursor) || search.Cursor.Length > MaxCursorLength)
+            {
+                return Error(
+                    McpErrorCodes.InvalidRequest,
+                    "query_cursor_invalid",
+                    false,
+                    activeBinding,
+                    correlationId);
+            }
+
+            byte[] cursorState;
+            try
+            {
+                cursorState = lease.ReadCursor(search.Cursor, queryFingerprint);
+            }
+            catch (DatabaseGenerationException exception)
+                when (exception.Code == DatabaseGenerationErrorCodes.CursorStale)
+            {
+                return Error(
+                    McpErrorCodes.StaleRevision,
+                    "query_cursor_stale",
+                    false,
+                    activeBinding,
+                    correlationId);
+            }
+            catch (DatabaseGenerationException exception)
+                when (exception.Code is DatabaseGenerationErrorCodes.CursorInvalid
+                    or DatabaseGenerationErrorCodes.CursorMismatch)
+            {
+                return Error(
+                    McpErrorCodes.InvalidRequest,
+                    "query_cursor_invalid",
+                    false,
+                    activeBinding,
+                    correlationId);
+            }
+
+            if (cursorState.Length != CursorStateLength)
+            {
+                return Error(
+                    McpErrorCodes.InvalidRequest,
+                    "query_cursor_invalid",
+                    false,
+                    activeBinding,
+                    correlationId);
+            }
+
+            offset = BinaryPrimitives.ReadInt64LittleEndian(cursorState);
+            if (offset < 0)
+            {
+                return Error(
+                    McpErrorCodes.InvalidRequest,
+                    "query_cursor_invalid",
+                    false,
+                    activeBinding,
+                    correlationId);
+            }
         }
 
         bool hasFilters = search.Path is not null
@@ -287,13 +341,68 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 "CG-005");
         }
 
-        int topK = checked(search.Budget.MaxItems + 1);
-        ActiveIndexSearchResult query = _store.QueryActiveCodeSearch(
-            lease,
-            search.Mode,
-            search.Query,
-            topK,
-            cancellationToken);
+        int pageSize;
+        long requestedTopK;
+        try
+        {
+            requestedTopK = checked(offset + search.Budget.MaxItems + 1L);
+            _ = checked((int)requestedTopK);
+            pageSize = checked(search.Budget.MaxItems + 1);
+        }
+        catch (OverflowException)
+        {
+            return Error(
+                McpErrorCodes.InvalidRequest,
+                "query_cursor_offset_out_of_range",
+                false,
+                activeBinding,
+                correlationId);
+        }
+
+        long maxCandidateCount = Math.Min(
+            search.Budget.MaxBytes,
+            checked((long)search.Budget.MaxTokens * 4));
+        if (requestedTopK > maxCandidateCount)
+        {
+            return Error(
+                McpErrorCodes.BudgetExhausted,
+                "query_cursor_candidate_budget_exhausted",
+                true,
+                activeBinding,
+                correlationId);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (stopwatch.Elapsed.TotalMilliseconds >= search.Budget.DeadlineMs)
+        {
+            return Error(
+                McpErrorCodes.DeadlineExceeded,
+                "request_deadline_reached",
+                true,
+                activeBinding,
+                correlationId);
+        }
+
+        ActiveIndexSearchResult query;
+        try
+        {
+            query = _store.QueryActiveCodeSearch(
+                lease,
+                search.Mode,
+                search.Query,
+                offset,
+                pageSize,
+                cancellationToken);
+        }
+        catch (OverflowException)
+        {
+            return Error(
+                McpErrorCodes.InvalidRequest,
+                "query_cursor_offset_out_of_range",
+                false,
+                activeBinding,
+                correlationId);
+        }
         IReadOnlyList<ActiveIndexSearchHit> filtered = search.Mode == "exact" && hasFilters
             ? query.Hits.Where(hit => MatchesFilters(hit.Document, search)).ToArray()
             : query.Hits;
@@ -316,6 +425,9 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             cancellationToken.ThrowIfCancellationRequested();
             IReadOnlyList<ActiveIndexSearchHit> selected = filtered.Take(selectedCount).ToArray();
             (IReadOnlyList<CodeSearchItem> items, IReadOnlyList<Evidence> evidence) = MapSearchResults(selected, search.Mode);
+            string? nextCursor = truncated
+                ? CreateCodeSearchCursor(lease, queryFingerprint, checked(offset + selectedCount))
+                : null;
             int consumedBytes = 0;
             int consumedTokens = 0;
             int finalBytes = 0;
@@ -334,6 +446,7 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 sourceCurrent,
                 truncated,
                 truncationReason,
+                nextCursor,
                 reportedElapsedMilliseconds,
                 consumedTokens,
                 consumedBytes);
@@ -349,6 +462,7 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                     sourceCurrent,
                     truncated,
                     truncationReason,
+                    nextCursor,
                     reportedElapsedMilliseconds,
                     consumedTokens,
                     consumedBytes);
@@ -378,6 +492,16 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 return Error(
                     McpErrorCodes.DeadlineExceeded,
                     "request_deadline_reached",
+                    true,
+                    activeBinding,
+                    correlationId);
+            }
+
+            if (selectedCount == 0 && filtered.Count > 0)
+            {
+                return Error(
+                    McpErrorCodes.BudgetExhausted,
+                    "no_budget_for_reliable_item",
                     true,
                     activeBinding,
                     correlationId);
@@ -725,6 +849,7 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
         bool sourceCurrent,
         bool truncated,
         string? truncationReason,
+        string? nextCursor,
         double elapsedMilliseconds,
         int consumedTokens,
         int consumedBytes) => new()
@@ -768,8 +893,44 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             },
             Truncated = truncated,
             TruncationReason = truncationReason,
-            NextCursor = null,
+            NextCursor = nextCursor,
         };
+
+    private static string CreateCodeSearchFingerprint(CodeSearchRequest search)
+    {
+        var canonical = new StringBuilder("couplet.code_search.cursor.v1");
+        AppendFingerprintPart(canonical, search.Mode);
+        AppendFingerprintPart(canonical, search.Query);
+        AppendFingerprintPart(canonical, search.Path);
+        AppendFingerprintPart(canonical, search.Language);
+        AppendFingerprintPart(canonical, search.Kind?.ToString());
+        AppendFingerprintPart(canonical, search.ProviderId);
+        return "code-search:v1:" + CursorCodec.HashRequest(canonical.ToString());
+    }
+
+    private static void AppendFingerprintPart(StringBuilder canonical, string? value)
+    {
+        canonical.Append('|');
+        if (value is null)
+        {
+            canonical.Append("null");
+            return;
+        }
+
+        canonical.Append(value.Length);
+        canonical.Append(':');
+        canonical.Append(value);
+    }
+
+    private static string CreateCodeSearchCursor(
+        ActiveIndexQueryLease lease,
+        string queryFingerprint,
+        long offset)
+    {
+        Span<byte> state = stackalloc byte[CursorStateLength];
+        BinaryPrimitives.WriteInt64LittleEndian(state, offset);
+        return lease.CreateCursor(queryFingerprint, state);
+    }
 
     private static McpToolResponse<SymbolDetailsItem> CreateSymbolDetailsResponse(
         WorkspaceBinding binding,

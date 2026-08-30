@@ -486,21 +486,34 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         ActiveIndexQueryLease lease,
         string mode,
         string query,
-        int topK,
+        long offset,
+        int pageSize,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentException.ThrowIfNullOrWhiteSpace(mode);
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topK);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageSize);
         cancellationToken.ThrowIfCancellationRequested();
+
+        int firstResult = checked((int)offset);
+        int topK = checked(firstResult + pageSize);
 
         DocumentCollectionSchema schema = _database.Documents.Catalog.TryGet(lease.DocumentCollectionName)
             ?? throw new InvalidDataException("active_generation_document_collection_missing");
         DocumentCollectionStore collection = _database.Documents.Open(lease.DocumentCollectionName);
         if (string.Equals(mode, "exact", StringComparison.Ordinal))
         {
+            if (firstResult != 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(offset),
+                    offset,
+                    "Exact lookup does not support a non-zero continuation offset.");
+            }
+
             DocumentPathIndex index = schema.TryGetIndex("by_stable_id")
                 ?? throw new InvalidDataException("active_generation_exact_index_missing");
             IReadOnlyList<DocumentRow> rows = collection.GetByIndex(index, query, Math.Min(topK, 2));
@@ -529,10 +542,12 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             "$.search_text",
             query,
             topK);
-        var hydrated = new List<ActiveIndexSearchHit>(fullTextHits.Count);
-        foreach (DocumentFullTextSearchHit hit in fullTextHits)
+        int pageCount = Math.Max(0, fullTextHits.Count - firstResult);
+        var hydrated = new List<ActiveIndexSearchHit>(pageCount);
+        for (int index = firstResult; index < fullTextHits.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            DocumentFullTextSearchHit hit = fullTextHits[index];
             DocumentRow? row = collection.Get(hit.DocumentId);
             if (row is null)
             {
@@ -1074,6 +1089,12 @@ internal sealed class ActiveIndexQueryLease : IDisposable
     internal string DocumentCollectionName { get; }
 
     internal string FullTextIndexName { get; }
+
+    internal string CreateCursor(string queryFingerprint, ReadOnlySpan<byte> continuationState) =>
+        _lease.CreateCursor(queryFingerprint, continuationState);
+
+    internal byte[] ReadCursor(string cursor, string queryFingerprint) =>
+        _lease.ReadCursor(cursor, queryFingerprint);
 
     public void Dispose() => _lease.Dispose();
 }
