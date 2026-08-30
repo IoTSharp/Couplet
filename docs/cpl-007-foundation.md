@@ -64,7 +64,7 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 | MCP Server Native AOT publish/run | PASS，0 IL/AOT warning | initialize、schema discovery 和 unavailable tool call |
 | reflection JSON disabled | PASS | typed DTO 全部绑定 generated `JsonTypeInfo`，协议包装使用 `Utf8JsonWriter` |
 
-未验证：Linux/macOS Native AOT、AOT background compaction/retention/KV maintenance、已发布 generation 的 exact/fulltext query、语言 parser worker、安装包和长稳。它们不能从本次 PASS 外推。
+未验证：Linux/macOS Native AOT、AOT background compaction/retention/KV maintenance、已发布 generation 查询的固定硬件/长稳与真实双客户端流程、语言 parser worker、安装包和长稳。它们不能从本次小型 PASS 外推。
 
 ## 6. executable/worker 发布矩阵
 
@@ -72,7 +72,7 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 |---|---|---|---|---|---|
 | `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext、真实 fault/capacity 未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview 与 `symbol_get`、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；query cursor、C2/C3 工具仍 unavailable |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同 active cursor/no-scan 与 `symbol_get`、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；跨 generation cursor、fulltext filter、C2/C3 工具仍 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：

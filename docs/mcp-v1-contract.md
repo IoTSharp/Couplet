@@ -57,7 +57,7 @@ MCP Server 启动时必须用 `--workspace <path-or-id>` 或等价显式配置�
 
 - C1 开放 exact/fulltext；C3 才开放 vector/hybrid。
 - 当前 source lane exact 只按 stable ID 命中 `by_stable_id` path index，fulltext 使用 active generation 的 `code_search` FullText index；请求全程持有同一 query lease，并返回实际 access path、候选/检查/返回计数和预算消耗。
-- 当前不签发 `next_cursor`；携带 cursor 或 fulltext path/language/kind filter 时稳定返回 capability limitation。默认 package lane 继续返回 `generation_publish_blocked`。
+- source lane fulltext 在截断时签发 `next_cursor`；cursor 绑定 workspace stream、active generation/revision、工具、规范化 query shape 和 little-endian offset，不包含 query 明文。相同 active generation 可连续分页；篡改或 query shape 变化返回 `invalid_request/query_cursor_invalid`，active 切换返回 `stale_revision/query_cursor_stale`。当前 FullText 没有原生 search-after，深页使用预算约束的 Top-K + offset，超过候选预算返回 `budget_exhausted/query_cursor_candidate_budget_exhausted`，不降级为 Document scan。exact 至多单点命中，不签发 cursor；fulltext path/language/kind filter 仍返回 capability limitation。默认 package lane 继续返回 `generation_publish_blocked`。
 - 请求未就绪 mode 时返回 `capability_unavailable`，不把 fulltext 冒充 vector/hybrid。
 - 相同 score 使用 stable ID 作为最终 tie-breaker，保证分页确定性。
 
