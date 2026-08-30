@@ -71,8 +71,8 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
 | `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source publish PASS、长稳待归档 | 否 | source 已 publish/cutoff cleanup，并有本机真实子进程 commit 前后 kill/reopen 回归；固定硬件容量复测、随机故障和长稳未完成 |
-| `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同进程 active/retired cursor/no-scan、path/language/entity-kind 过滤与 `symbol_get`、其余 unavailable tools | PASS | source publish PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；cursor 不跨进程重启，C2/C3 工具仍 unavailable |
+| `Couplet.Daemon` | 版本/能力与 source workspace watch/reconciliation/publish 生命周期 | PASS | source publish PASS | 否 | FileSystemWatcher + 默认 30 秒 reconciliation 已接线；跨平台、随机故障、固定硬件和 7 天长稳未验证 |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、durable orderly-reopen retired cursor/no-scan、path/language/entity-kind 过滤与 `symbol_get`、其余 unavailable tools | PASS | source publish PASS | 否 | source + 显式数据库开放 status/search/symbol；真实进程重启/跨进程 cursor 与 hard-kill CAS 未验证，C2/C3 工具仍 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：

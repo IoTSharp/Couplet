@@ -37,17 +37,26 @@ public static class IndexSnapshotBuilder
         string indexRevision = IndexRevisionFactory.Create(
             workspace.Result.WorkspaceId,
             workspace.Result.SourceRevision,
+            workspace.InputsDigest,
             previousIndexRevision,
             producerVersions);
 
         var files = new List<IndexedFile>();
         var failures = new List<FileIndexFailure>();
         foreach (WorkspaceFileDescriptor descriptor in workspace.Result.Files
+                     .Where(file => file.Disposition is WorkspaceFileDisposition.Unreadable
+                         or WorkspaceFileDisposition.SymlinkOutside)
+                     .OrderBy(file => file.Path, StringComparer.Ordinal))
+        {
+            failures.Add(Failure(descriptor.Path, descriptor.Reason, AdapterIdFor(descriptor)));
+        }
+
+        foreach (WorkspaceFileDescriptor descriptor in workspace.Result.Files
                      .Where(file => file.Disposition == WorkspaceFileDisposition.Included)
                      .OrderBy(file => file.Path, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string adapterId = BuiltinLanguageAdapters.Find(descriptor.Language)?.Capability.AdapterId ?? "couplet.text";
+            string adapterId = AdapterIdFor(descriptor);
             try
             {
                 byte[] bytes = await File.ReadAllBytesAsync(workspace.IncludedPaths[descriptor.Path], cancellationToken)
@@ -102,6 +111,9 @@ public static class IndexSnapshotBuilder
             Failures = failures.OrderBy(failure => failure.Path, StringComparer.Ordinal).ToArray(),
         };
     }
+
+    private static string AdapterIdFor(WorkspaceFileDescriptor descriptor) =>
+        BuiltinLanguageAdapters.Find(descriptor.Language)?.Capability.AdapterId ?? "couplet.text";
 
     private static IndexedFile CreateTextOnlyFile(
         WorkspaceDiscoveryResult workspace,

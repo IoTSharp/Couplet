@@ -47,7 +47,7 @@ initial、100-file 和 reopen 各只有 1 个昂贵样本；报告中的 P50/P95
 - 真实 Git branch switch 携带 branch/HEAD 到 snapshot，强制 `git_branch_changed` 全量重建；两个分支的 staging collection 在 reopen 后保持隔离。
 - Codex 与 Claude Code 的真实 MCP initialize/tools-call 回归证明 `workspace_status`、`code_search`、`symbol_get` 均返回 `CG-005/generation_publish_blocked`，响应不包含 staging items。
 
-这次 2026-08-25 容量运行没有覆盖 active publish 点 kill-before/after、query lease、cursor continuity 或 retired cleanup。后续 source-lane 小型回归已覆盖同进程 active/retired cursor lease、cutoff-aware cleanup，以及真实 `Couplet.Cli` 子进程在 commit 前后强杀/重开的原子可见性；这些结果没有在本文的 Medium/Large 固定语料上复测，也不提供进程重启 cursor、随机进程故障、双客户端、容量或长稳证据。因此 CG-005 继续为 `verifying`，C1 Performance/Capacity gate 继续为 **FAIL**；默认 package 的 Native AOT background maintenance 仍由 CG-006 阻塞。
+这次 2026-08-25 容量运行没有覆盖 active publish 点 kill-before/after、query lease、cursor continuity 或 retired cleanup。后续 source-lane 小型回归已覆盖 active/retained/exact-revision lease、持久 registry 支持的 orderly store reopen cursor、cutoff-aware cleanup，以及真实 `Couplet.Cli` 子进程在 commit 前后强杀/重开的原子可见性；这些结果没有在本文的 Medium/Large 固定语料上复测，也不提供真实进程重启/跨进程 cursor、hard-kill CAS、随机进程故障、双客户端、容量或长稳证据。因此 CG-005 继续为 `verifying`，C1 Performance/Capacity gate 继续为 **FAIL**；默认 package 的 Native AOT background maintenance 仍由 CG-006 阻塞。
 
 ## 复现命令
 

@@ -11,12 +11,13 @@ internal static class IndexRevisionFactory
     internal static string Create(
         string workspaceId,
         string sourceRevision,
+        string inputsDigest,
         string? previousIndexRevision,
         IReadOnlyList<string> producerVersions)
     {
         long ordinal = ParseOrdinal(previousIndexRevision) + 1;
         string input = string.Join('\0',
-            [workspaceId, sourceRevision, .. producerVersions.Order(StringComparer.Ordinal)]);
+            [workspaceId, sourceRevision, inputsDigest, .. producerVersions.Order(StringComparer.Ordinal)]);
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input))).ToLowerInvariant();
         return $"{_prefix}{ordinal.ToString("D16", CultureInfo.InvariantCulture)}_{digest[..20]}";
     }

@@ -87,6 +87,151 @@ public sealed class C1McpQueryCursorTests
     }
 
     [Fact]
+    public async Task CodeSearch_FullTextCursorAfterStoreRestart_ContinuesSameActiveGenerationOnce()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 4);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            string firstId;
+            using (var firstStore = new SonnetDbIndexGenerationStore(database))
+            {
+                var firstExecutor = new SonnetDbMcpToolExecutor(firstStore, 0);
+                McpToolResponse<CodeSearchItem> firstPage = Success(DispatchSearch(
+                    firstExecutor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1));
+                cursor = Assert.IsType<string>(firstPage.NextCursor);
+                firstId = Assert.Single(firstPage.Items).Id;
+            }
+
+            string nextCursor;
+            string secondId;
+            using (var reopenedStore = new SonnetDbIndexGenerationStore(database))
+            {
+                var reopenedExecutor = new SonnetDbMcpToolExecutor(reopenedStore, 0);
+                McpToolResponse<CodeSearchItem> secondPage = Success(DispatchSearch(
+                    reopenedExecutor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor));
+                Assert.Equal(published.Snapshot.IndexRevision, secondPage.IndexRevision);
+                Assert.Equal(
+                    "generation_retained_cursor_lease:document_fulltext:code_search",
+                    secondPage.Diagnostics.AccessPath);
+                nextCursor = Assert.IsType<string>(secondPage.NextCursor);
+                secondId = Assert.Single(secondPage.Items).Id;
+
+                McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                    reopenedExecutor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+                Assert.Equal("query_cursor_invalid", replay.Reason);
+            }
+
+            using var finalStore = new SonnetDbIndexGenerationStore(database);
+            var finalExecutor = new SonnetDbMcpToolExecutor(finalStore, 0);
+            McpError crossInstanceReplay = Assert.IsType<McpError>(DispatchSearch(
+                finalExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, crossInstanceReplay.Code);
+            Assert.Equal("query_cursor_invalid", crossInstanceReplay.Reason);
+            McpToolResponse<CodeSearchItem> thirdPage = Success(DispatchSearch(
+                finalExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                nextCursor));
+
+            Assert.NotEqual(firstId, secondId);
+            Assert.DoesNotContain(firstId, thirdPage.Items.Select(item => item.Id));
+            Assert.DoesNotContain(secondId, thirdPage.Items.Select(item => item.Id));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_FullTextCursorAcrossRestarts_DoesNotRenewAbsoluteExpiration()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 4);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            using (var firstStore = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention))
+            {
+                var executor = new SonnetDbMcpToolExecutor(firstStore, 0);
+                cursor = Assert.IsType<string>(Success(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1)).NextCursor);
+            }
+
+            timeProvider.Advance(TimeSpan.FromSeconds(30));
+            using (var secondStore = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention))
+            {
+                var executor = new SonnetDbMcpToolExecutor(secondStore, 0);
+                cursor = Assert.IsType<string>(Success(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor)).NextCursor);
+            }
+
+            timeProvider.Advance(TimeSpan.FromSeconds(30));
+            using var finalStore = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+            Assert.Equal(0, finalStore.RetainedIndexQueryLeaseCountForTest);
+            var finalExecutor = new SonnetDbMcpToolExecutor(finalStore, 0);
+            McpError expired = Assert.IsType<McpError>(DispatchSearch(
+                finalExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.StaleRevision, expired.Code);
+            Assert.Equal("query_cursor_expired", expired.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
     public async Task CodeSearch_FullTextCursorTamperOrQueryShapeChange_FailsClosedWithoutScan()
     {
         string workspaceRoot = TemporaryDirectory();
@@ -322,7 +467,7 @@ public sealed class C1McpQueryCursorTests
                 cursor).Error);
 
             Assert.Equal(McpErrorCodes.StaleRevision, expired.Code);
-            Assert.Equal("query_cursor_stale", expired.Reason);
+            Assert.Equal("query_cursor_expired", expired.Reason);
             Assert.Equal(secondSnapshot.IndexRevision, expired.CurrentRevision);
             Assert.Equal(oldFullScansBefore, FullScanCount(oldCollection));
             Assert.Equal(activeFullScansBefore, FullScanCount(activeCollection));
@@ -404,6 +549,603 @@ public sealed class C1McpQueryCursorTests
     }
 
     [Fact]
+    public async Task CodeSearch_ClaimTransitionFault_FailsClosedAndReopenHasNoDurableLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                var executor = new SonnetDbMcpToolExecutor(store, 0);
+                cursor = Assert.IsType<string>(Success(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1)).NextCursor);
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == IndexQueryCursorTransitionFaultPoint.AfterClaimCas)
+                    {
+                        throw new IOException("controlled_claim_transition_fault");
+                    }
+                };
+
+                McpError failed = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.IndexCorrupt, failed.Code);
+                Assert.Equal("query_cursor_registry_unavailable", failed.Reason);
+                Assert.False(failed.Retryable);
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+                store.QueryCursorTransitionFaultTestHook = null;
+
+                McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.IndexCorrupt, replay.Code);
+                Assert.Equal("query_cursor_registry_unavailable", replay.Reason);
+                Assert.False(replay.Retryable);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var reopenedExecutor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError reopenedReplay = Assert.IsType<McpError>(DispatchSearch(
+                reopenedExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, reopenedReplay.Code);
+            Assert.Equal("query_cursor_invalid", reopenedReplay.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RetainTransitionFault_FailsClosedAndReopenHasNoDurableLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                string queryFingerprint = CodeSearchFingerprint("SharedToken");
+                using (IndexQueryRequestLease requestLease = store.AcquireIndexQuery(
+                    published.Snapshot.WorkspaceId,
+                    cursor: null,
+                    queryFingerprint,
+                    reserveQueryLeaseSlot: true))
+                {
+                    byte[] state = new byte[sizeof(long) + 16];
+                    BinaryPrimitives.WriteInt64LittleEndian(state, 1);
+                    _ = Guid.NewGuid().TryWriteBytes(state.AsSpan(sizeof(long)));
+                    string cursor = requestLease.CreateCursor(queryFingerprint, state);
+                    store.QueryCursorTransitionFaultTestHook = point =>
+                    {
+                        if (point == IndexQueryCursorTransitionFaultPoint.AfterRetainCas)
+                        {
+                            throw new IOException("controlled_retain_transition_fault");
+                        }
+                    };
+
+                    IndexQueryCursorLeaseException exception = Assert.Throws<IndexQueryCursorLeaseException>(() =>
+                        requestLease.TryRetain(cursor, queryFingerprint));
+                    Assert.Equal(IndexQueryCursorLeaseFailure.RegistryUnavailable, exception.Failure);
+                    Assert.Equal(
+                        "controlled_retain_transition_fault",
+                        Assert.IsType<IOException>(exception.InnerException).Message);
+                    store.QueryCursorTransitionFaultTestHook = null;
+                }
+
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Theory]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.BeforeReleaseCas)]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.AfterReleaseCas)]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.BeforeReleaseDelete)]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.AfterReleaseDelete)]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.BeforeReleaseSnapshot)]
+    [InlineData((int)IndexQueryCursorTransitionFaultPoint.AfterReleaseSnapshot)]
+    public async Task CodeSearch_FinalPageReleaseFault_FailsRegistryAndReopenRejectsReplay(
+        int faultPointValue)
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var faultPoint = (IndexQueryCursorTransitionFaultPoint)faultPointValue;
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                var executor = new SonnetDbMcpToolExecutor(store, 0);
+                cursor = Assert.IsType<string>(Success(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1)).NextCursor);
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == faultPoint)
+                    {
+                        throw new IOException($"controlled_{faultPoint}");
+                    }
+                };
+
+                McpError failed = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 100,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.IndexCorrupt, failed.Code);
+                Assert.Equal("query_cursor_registry_unavailable", failed.Reason);
+                Assert.False(failed.Retryable);
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+                store.QueryCursorTransitionFaultTestHook = null;
+
+                McpError sameProcess = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1).Error);
+                Assert.Equal(McpErrorCodes.IndexCorrupt, sameProcess.Code);
+                Assert.Equal("query_cursor_registry_unavailable", sameProcess.Reason);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var reopenedExecutor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                reopenedExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+            Assert.Equal("query_cursor_invalid", replay.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_QueryErrorWithReleaseFault_PreservesPrimaryErrorAndFaultsRegistry()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                cursor = CreateSignedCursor(
+                    store,
+                    published.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: -1);
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == IndexQueryCursorTransitionFaultPoint.BeforeReleaseCas)
+                    {
+                        throw new IOException("controlled_query_error_release_fault");
+                    }
+                };
+
+                var executor = new SonnetDbMcpToolExecutor(store, 0);
+                McpError primary = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.InvalidRequest, primary.Code);
+                Assert.Equal("query_cursor_invalid", primary.Reason);
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+                store.QueryCursorTransitionFaultTestHook = null;
+
+                McpError registry = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1).Error);
+                Assert.Equal(McpErrorCodes.IndexCorrupt, registry.Code);
+                Assert.Equal("query_cursor_registry_unavailable", registry.Reason);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_CancellationWithReleaseFault_PreservesCancellationAndFaultsRegistry()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            string cursor = Assert.IsType<string>(Success(DispatchSearch(
+                executor,
+                binding,
+                "SharedToken",
+                maxItems: 1)).NextCursor);
+            using var cancellation = new CancellationTokenSource();
+            executor.BeforeResponseSerializationTestHook = cancellation.Cancel;
+            store.QueryCursorTransitionFaultTestHook = point =>
+            {
+                if (point == IndexQueryCursorTransitionFaultPoint.BeforeReleaseCas)
+                {
+                    throw new IOException("controlled_cancellation_release_fault");
+                }
+            };
+
+            McpDispatchResult cancelled = executor.Execute(
+                new CodeSearchRequest
+                {
+                    Budget = new QueryBudget
+                    {
+                        MaxItems = 1,
+                        MaxTokens = 1000,
+                        MaxBytes = 4096,
+                        DeadlineMs = 10_000,
+                    },
+                    Cursor = cursor,
+                    Query = "SharedToken",
+                    Mode = "fulltext",
+                },
+                binding,
+                "query-cursor-release-cancellation-test",
+                cancellation.Token);
+
+            McpError primary = Assert.IsType<McpError>(cancelled.Error);
+            Assert.Equal(McpErrorCodes.Cancelled, primary.Code);
+            Assert.Equal("client_cancelled", primary.Reason);
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            executor.BeforeResponseSerializationTestHook = null;
+            store.QueryCursorTransitionFaultTestHook = null;
+
+            McpError registry = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                binding,
+                "SharedToken",
+                maxItems: 1).Error);
+            Assert.Equal(McpErrorCodes.IndexCorrupt, registry.Code);
+            Assert.Equal("query_cursor_registry_unavailable", registry.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_ClaimCasFault_ReleasesExpiredSiblingAndRetiredGenerationLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceIndexSnapshot secondSnapshot;
+            using (var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention))
+            {
+                _ = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 0);
+                timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30));
+                string liveCursor = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 1);
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, store, first);
+                timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30));
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == IndexQueryCursorTransitionFaultPoint.BeforeClaimCas)
+                    {
+                        throw new IOException("controlled_claim_cas_fault");
+                    }
+                };
+
+                var executor = new SonnetDbMcpToolExecutor(store, 0);
+                McpError failed = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    Binding(secondSnapshot),
+                    "SharedToken",
+                    maxItems: 1,
+                    liveCursor).Error);
+
+                Assert.Equal(McpErrorCodes.IndexCorrupt, failed.Code);
+                Assert.Equal("query_cursor_registry_unavailable", failed.Reason);
+                Assert.False(failed.Retryable);
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+                store.QueryCursorTransitionFaultTestHook = null;
+                DatabaseGenerationCleanupResult cleanup = store.CleanupRetired(
+                    first.Snapshot.WorkspaceId);
+                Assert.Equal([1L], cleanup.RemovedRevisions);
+                Assert.Empty(cleanup.DeferredRevisions);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_RetainCasFault_ReleasesExpiredSiblingAndUnreturnedCursorLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceIndexSnapshot secondSnapshot;
+            using (var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention))
+            {
+                _ = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 0);
+                timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30));
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, store, first);
+                var executor = new SonnetDbMcpToolExecutor(store, 0)
+                {
+                    BeforeResponseSerializationTestHook = () =>
+                        timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30)),
+                };
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == IndexQueryCursorTransitionFaultPoint.BeforeRetainCas)
+                    {
+                        throw new IOException("controlled_retain_cas_fault");
+                    }
+                };
+
+                McpError failed = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    Binding(secondSnapshot),
+                    "SharedToken",
+                    maxItems: 1).Error);
+
+                Assert.Equal(McpErrorCodes.IndexCorrupt, failed.Code);
+                Assert.Equal("query_cursor_registry_unavailable", failed.Reason);
+                Assert.False(failed.Retryable);
+                Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+                executor.BeforeResponseSerializationTestHook = null;
+                store.QueryCursorTransitionFaultTestHook = null;
+                DatabaseGenerationCleanupResult cleanup = store.CleanupRetired(
+                    first.Snapshot.WorkspaceId);
+                Assert.Equal([1L], cleanup.RemovedRevisions);
+                Assert.Empty(cleanup.DeferredRevisions);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CodeSearch_ExpirationMaintenanceFault_FailsClosedWithoutEscapingTimer(
+        bool faultDuringTimerEntry)
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+            _ = CreateSignedCursor(
+                store,
+                published.Snapshot.WorkspaceId,
+                "SharedToken",
+                offset: 0);
+            timeProvider.Advance(TimeSpan.FromSeconds(30));
+            string liveCursor = CreateSignedCursor(
+                store,
+                published.Snapshot.WorkspaceId,
+                "SharedToken",
+                offset: 0);
+            IndexQueryCursorTransitionFaultPoint faultPoint = faultDuringTimerEntry
+                ? IndexQueryCursorTransitionFaultPoint.BeforeExpirationTimerMaintenance
+                : IndexQueryCursorTransitionFaultPoint.AfterExpirationDelete;
+            store.QueryCursorTransitionFaultTestHook = point =>
+            {
+                if (point == faultPoint)
+                {
+                    throw new IOException("controlled_expiration_maintenance_fault");
+                }
+            };
+
+            Exception? timerException = Record.Exception(() =>
+                timeProvider.Advance(TimeSpan.FromSeconds(30)));
+            Assert.Null(timerException);
+            int retainedAfterTimer = faultDuringTimerEntry ? 2 : 1;
+            Assert.Equal(retainedAfterTimer, store.RetainedIndexQueryLeaseCountForTest);
+            store.QueryCursorTransitionFaultTestHook = null;
+
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            McpError continuationUnavailable = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1,
+                liveCursor).Error);
+            Assert.Equal(McpErrorCodes.IndexCorrupt, continuationUnavailable.Code);
+            Assert.Equal("query_cursor_registry_unavailable", continuationUnavailable.Reason);
+            Assert.False(continuationUnavailable.Retryable);
+            Assert.Equal(retainedAfterTimer, store.RetainedIndexQueryLeaseCountForTest);
+
+            McpError newQueryUnavailable = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1).Error);
+            Assert.Equal(McpErrorCodes.IndexCorrupt, newQueryUnavailable.Code);
+            Assert.Equal("query_cursor_registry_unavailable", newQueryUnavailable.Reason);
+            Assert.False(newQueryUnavailable.Retryable);
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RetainWithExpiredCleanupFault_FailsClosedAndReleasesTransferredLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+            _ = CreateSignedCursor(
+                store,
+                published.Snapshot.WorkspaceId,
+                "SharedToken",
+                offset: 0);
+            timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30));
+
+            string queryFingerprint = CodeSearchFingerprint("SharedToken");
+            using (IndexQueryRequestLease requestLease = store.AcquireIndexQuery(
+                published.Snapshot.WorkspaceId,
+                cursor: null,
+                queryFingerprint,
+                reserveQueryLeaseSlot: true))
+            {
+                Span<byte> state = stackalloc byte[sizeof(long) + 16];
+                BinaryPrimitives.WriteInt64LittleEndian(state, 1);
+                _ = Guid.NewGuid().TryWriteBytes(state[sizeof(long)..]);
+                string cursor = requestLease.CreateCursor(queryFingerprint, state);
+                timeProvider.AdvanceWithoutRunningTimers(TimeSpan.FromSeconds(30));
+                store.QueryCursorTransitionFaultTestHook = point =>
+                {
+                    if (point == IndexQueryCursorTransitionFaultPoint.AfterExpirationDelete)
+                    {
+                        throw new IOException("controlled_post_delete_fault");
+                    }
+                };
+
+                IndexQueryCursorLeaseException exception = Assert.Throws<IndexQueryCursorLeaseException>(() =>
+                    requestLease.TryRetain(cursor, queryFingerprint));
+                Assert.Equal(IndexQueryCursorLeaseFailure.RegistryUnavailable, exception.Failure);
+                store.QueryCursorTransitionFaultTestHook = null;
+            }
+
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            McpError unavailable = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1).Error);
+            Assert.Equal(McpErrorCodes.IndexCorrupt, unavailable.Code);
+            Assert.Equal("query_cursor_registry_unavailable", unavailable.Reason);
+            Assert.False(unavailable.Retryable);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
     public async Task CodeSearch_RetiredContinuationFault_ReleasesLeaseAndAllowsCleanup()
     {
         string workspaceRoot = TemporaryDirectory();
@@ -474,7 +1216,7 @@ public sealed class C1McpQueryCursorTests
     }
 
     [Fact]
-    public async Task Store_DisposeWithRetiredCursorLease_ReopenCanCleanupGeneration()
+    public async Task Store_DisposeWithRetiredCursorLease_ReopenRestoresLeaseUntilCursorCompletes()
     {
         string workspaceRoot = TemporaryDirectory();
         string database = TemporaryDirectory();
@@ -482,10 +1224,11 @@ public sealed class C1McpQueryCursorTests
         {
             PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
             WorkspaceIndexSnapshot secondSnapshot;
+            string cursor;
             var store = new SonnetDbIndexGenerationStore(database);
             try
             {
-                _ = CreateSignedCursor(
+                cursor = CreateSignedCursor(
                     store,
                     first.Snapshot.WorkspaceId,
                     "SharedToken",
@@ -502,6 +1245,22 @@ public sealed class C1McpQueryCursorTests
             }
 
             using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(1, reopened.RetainedIndexQueryLeaseCountForTest);
+            DatabaseGenerationCleanupResult whileRestored = reopened.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Empty(whileRestored.RemovedRevisions);
+            Assert.Equal([1L], whileRestored.DeferredRevisions);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpToolResponse<CodeSearchItem> finalPage = Success(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 100,
+                cursor));
+            Assert.Equal(first.Snapshot.IndexRevision, finalPage.IndexRevision);
+            Assert.Null(finalPage.NextCursor);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+
             DatabaseGenerationCleanupResult cleanup = reopened.CleanupRetired(
                 first.Snapshot.WorkspaceId);
             Assert.Equal([1L], cleanup.RemovedRevisions);
@@ -512,6 +1271,52 @@ public sealed class C1McpQueryCursorTests
             ActiveIndexPlanningSnapshot active = Assert.IsType<ActiveIndexPlanningSnapshot>(
                 reopened.ReadActivePlanningSnapshot(secondSnapshot.WorkspaceId));
             Assert.Equal(secondSnapshot.IndexRevision, active.PlanningSnapshot.IndexRevision);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RetainWithoutReservedSlot_ReservesOnDemandAndReleasesAfterContinuation()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            const string queryFingerprint = "exact-query:test";
+            byte[] cursorState = new byte[sizeof(long) + 16];
+            BinaryPrimitives.WriteInt64LittleEndian(cursorState, 1);
+            _ = Guid.NewGuid().TryWriteBytes(cursorState.AsSpan(sizeof(long)));
+            string cursor;
+            using (IndexQueryRequestLease requestLease = store.AcquireIndexQuery(
+                published.Snapshot.WorkspaceId,
+                cursor: null,
+                queryFingerprint,
+                reserveQueryLeaseSlot: false))
+            {
+                cursor = requestLease.CreateCursor(queryFingerprint, cursorState);
+                Assert.Equal(
+                    IndexQueryCursorRetentionResult.Retained,
+                    requestLease.TryRetain(cursor, queryFingerprint));
+            }
+
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+            using (IndexQueryRequestLease continuationLease = store.AcquireIndexQuery(
+                published.Snapshot.WorkspaceId,
+                cursor,
+                queryFingerprint,
+                reserveQueryLeaseSlot: false))
+            {
+                Assert.True(continuationLease.CursorRecognized);
+                Assert.Equal(cursorState, continuationLease.ReadCursor(cursor, queryFingerprint));
+            }
+
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
         }
         finally
         {
@@ -605,6 +1410,258 @@ public sealed class C1McpQueryCursorTests
                 SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
                 store.RetainedIndexQueryLeaseCountForTest);
             Assert.Equal(fullScansBefore, FullScanCount(collection));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_RetainedLeaseCapacityAfterRestart_RemainsBoundedAndTransferable()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            var cursors = new List<string>();
+            using (var firstStore = new SonnetDbIndexGenerationStore(database))
+            {
+                for (int index = 0;
+                    index < SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest;
+                    index++)
+                {
+                    cursors.Add(CreateSignedCursor(
+                        firstStore,
+                        published.Snapshot.WorkspaceId,
+                        "SharedToken",
+                        index));
+                }
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError capacity = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1).Error);
+            Assert.Equal(McpErrorCodes.BudgetExhausted, capacity.Code);
+            Assert.Equal("query_cursor_lease_capacity_exhausted", capacity.Reason);
+
+            McpToolResponse<CodeSearchItem> completed = Success(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 100,
+                cursors[0]));
+            Assert.Null(completed.NextCursor);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest - 1,
+                reopened.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RestoreWithMaximumLiveAndUnavailableRecord_RemovesUnavailableBeforeCapacityCheck()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using (var firstStore = new SonnetDbIndexGenerationStore(database))
+            {
+                for (int index = 0;
+                    index < SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest;
+                    index++)
+                {
+                    _ = CreateSignedCursor(
+                        firstStore,
+                        published.Snapshot.WorkspaceId,
+                        "SharedToken",
+                        index);
+                }
+
+                firstStore.AddUnavailableRetainedQueryCursorRecordForTest(
+                    published.Snapshot.WorkspaceId,
+                    long.MaxValue,
+                    DateTimeOffset.UtcNow.AddHours(1));
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError capacity = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1).Error);
+            Assert.Equal(McpErrorCodes.BudgetExhausted, capacity.Code);
+            Assert.Equal("query_cursor_lease_capacity_exhausted", capacity.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RestoreWithSemanticallyInvalidRecord_DeletesRecordAndKeepsActiveGenerationQueryable()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using (var firstStore = new SonnetDbIndexGenerationStore(database))
+            {
+                firstStore.AddSemanticallyInvalidRetainedQueryCursorRecordForTest(
+                    published.Report.DatabaseGenerationRevision!.Value,
+                    DateTimeOffset.UtcNow.AddHours(1));
+            }
+
+            using (var reopened = new SonnetDbIndexGenerationStore(database))
+            {
+                Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+                var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+                McpToolResponse<CodeSearchItem> response = Success(DispatchSearch(
+                    executor,
+                    Binding(published.Snapshot),
+                    "SharedToken",
+                    maxItems: 100));
+                Assert.Equal(published.Snapshot.IndexRevision, response.IndexRevision);
+                Assert.NotEmpty(response.Items);
+                Assert.Null(response.NextCursor);
+            }
+
+            using var reopenedAgain = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopenedAgain.RetainedIndexQueryLeaseCountForTest);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RestoreWithRetiredGenerationManifestMissing_DeletesCursorAndKeepsActiveGenerationQueryable()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceIndexSnapshot secondSnapshot;
+            string cursor;
+            using (var firstStore = new SonnetDbIndexGenerationStore(database))
+            {
+                cursor = CreateSignedCursor(
+                    firstStore,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 1);
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, firstStore, first);
+                firstStore.RemoveGenerationManifestForTest(
+                    first.Snapshot.WorkspaceId,
+                    first.Report.DatabaseGenerationRevision!.Value);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError removedCursor = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, removedCursor.Code);
+            Assert.Equal("query_cursor_invalid", removedCursor.Reason);
+
+            McpToolResponse<CodeSearchItem> response = Success(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 100));
+            Assert.Equal(secondSnapshot.IndexRevision, response.IndexRevision);
+            Assert.NotEmpty(response.Items);
+            Assert.Null(response.NextCursor);
+
+            DatabaseGenerationCleanupResult cleanup = reopened.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_RestoreCrossingCursorExpiration_DoesNotRestoreExpiredLease()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan retention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            string cursor;
+            using (var firstStore = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention))
+            {
+                cursor = CreateSignedCursor(
+                    firstStore,
+                    published.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 1);
+            }
+
+            bool clockAdvanced = false;
+            timeProvider.AfterUtcNowReadTestHook = () =>
+            {
+                timeProvider.AfterUtcNowReadTestHook = null;
+                timeProvider.AdvanceWithoutRunningTimers(retention);
+                clockAdvanced = true;
+            };
+            using var reopened = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                retention);
+
+            Assert.True(clockAdvanced);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError expired = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.StaleRevision, expired.Code);
+            Assert.Equal("query_cursor_expired", expired.Reason);
         }
         finally
         {
@@ -1062,7 +2119,7 @@ public sealed class C1McpQueryCursorTests
         Span<byte> state = stackalloc byte[sizeof(long) + 16];
         BinaryPrimitives.WriteInt64LittleEndian(state, offset);
         _ = Guid.NewGuid().TryWriteBytes(state[sizeof(long)..]);
-        string cursor = requestLease.Lease.CreateCursor(queryFingerprint, state);
+        string cursor = requestLease.CreateCursor(queryFingerprint, state);
         Assert.Equal(
             IndexQueryCursorRetentionResult.Retained,
             requestLease.TryRetain(cursor, queryFingerprint));
@@ -1236,12 +2293,20 @@ public sealed class C1McpQueryCursorTests
         private DateTimeOffset _utcNow = utcNow;
         private ManualTimer? _timer;
 
+        internal Action? AfterUtcNowReadTestHook { get; set; }
+
         public override DateTimeOffset GetUtcNow()
         {
+            DateTimeOffset result;
+            Action? afterRead;
             lock (_sync)
             {
-                return _utcNow;
+                result = _utcNow;
+                afterRead = AfterUtcNowReadTestHook;
             }
+
+            afterRead?.Invoke();
+            return result;
         }
 
         public override ITimer CreateTimer(
@@ -1269,15 +2334,7 @@ public sealed class C1McpQueryCursorTests
 
         internal void Advance(TimeSpan amount)
         {
-            if (amount < TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(amount), amount, "Advance cannot be negative.");
-            }
-
-            lock (_sync)
-            {
-                _utcNow += amount;
-            }
+            AdvanceWithoutRunningTimers(amount);
 
             while (true)
             {
@@ -1293,6 +2350,19 @@ public sealed class C1McpQueryCursorTests
                 }
 
                 callback(state);
+            }
+        }
+
+        internal void AdvanceWithoutRunningTimers(TimeSpan amount)
+        {
+            if (amount < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(amount), amount, "Advance cannot be negative.");
+            }
+
+            lock (_sync)
+            {
+                _utcNow += amount;
             }
         }
 
@@ -1322,6 +2392,7 @@ public sealed class C1McpQueryCursorTests
                 if (ReferenceEquals(_timer, timer))
                 {
                     timer.DisposeUnsafe();
+                    _timer = null;
                 }
             }
         }

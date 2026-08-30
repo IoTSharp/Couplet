@@ -9,27 +9,35 @@ namespace Couplet.Application.Workspaces;
 /// </summary>
 public sealed class WorkspaceChangeMonitor : IDisposable
 {
-    private const int _queueCapacity = 4096;
+    private const int QueueCapacity = 4096;
     private readonly string _rootPath;
     private readonly FileSystemWatcher _watcher;
     private readonly Channel<string> _changes;
     private int _fullRescanRequired;
-    private bool _disposed;
+    private int _disposed;
+
+    internal bool FullRescanPending => Volatile.Read(ref _fullRescanRequired) != 0;
 
     /// <summary>
     /// 初始化工作区变化监视器。
     /// </summary>
     /// <param name="workspacePath">显式工作区目录。</param>
     public WorkspaceChangeMonitor(string workspacePath)
+        : this(workspacePath, QueueCapacity)
+    {
+    }
+
+    internal WorkspaceChangeMonitor(string workspacePath, int queueCapacity)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(queueCapacity);
         _rootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspacePath));
         if (!Directory.Exists(_rootPath))
         {
             throw new DirectoryNotFoundException("The explicitly configured workspace was not found.");
         }
 
-        _changes = Channel.CreateBounded<string>(new BoundedChannelOptions(_queueCapacity)
+        _changes = Channel.CreateBounded<string>(new BoundedChannelOptions(queueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
@@ -37,36 +45,40 @@ public sealed class WorkspaceChangeMonitor : IDisposable
         });
         _watcher = new FileSystemWatcher(_rootPath)
         {
+            Filter = "*",
             IncludeSubdirectories = true,
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
-            EnableRaisingEvents = true,
         };
         _watcher.Changed += OnChanged;
         _watcher.Created += OnChanged;
         _watcher.Deleted += OnChanged;
         _watcher.Renamed += OnRenamed;
         _watcher.Error += OnError;
+        _watcher.EnableRaisingEvents = true;
     }
 
     /// <summary>
     /// 持续读取经 debounce 合并的变化批次。
     /// </summary>
-    /// <param name="debounce">事件静默窗口。</param>
+    /// <param name="debounce">首个事件后的固定合并窗口。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>异步变化批次。</returns>
     public async IAsyncEnumerable<WorkspaceChangeBatch> WatchAsync(
         TimeSpan debounce,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         ArgumentOutOfRangeException.ThrowIfLessThan(debounce, TimeSpan.Zero);
 
         while (await _changes.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var paths = new SortedSet<string>(StringComparer.Ordinal);
             Drain(paths);
-            await Task.Delay(debounce, cancellationToken).ConfigureAwait(false);
-            Drain(paths);
+            if (debounce > TimeSpan.Zero)
+            {
+                await Task.Delay(debounce, cancellationToken).ConfigureAwait(false);
+                Drain(paths);
+            }
 
             bool fullRescan = Interlocked.Exchange(ref _fullRescanRequired, 0) != 0;
             yield return new WorkspaceChangeBatch
@@ -83,7 +95,7 @@ public sealed class WorkspaceChangeMonitor : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
@@ -96,7 +108,6 @@ public sealed class WorkspaceChangeMonitor : IDisposable
         _watcher.Error -= OnError;
         _watcher.Dispose();
         _changes.Writer.TryComplete();
-        _disposed = true;
     }
 
     private void Drain(SortedSet<string> paths)
@@ -120,22 +131,37 @@ public sealed class WorkspaceChangeMonitor : IDisposable
 
     private void OnError(object sender, ErrorEventArgs eventArgs)
     {
-        Interlocked.Exchange(ref _fullRescanRequired, 1);
-        _changes.Writer.TryWrite(string.Empty);
+        RequireFullRescan();
     }
 
     private void Queue(string fullPath)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
         string path = Path.GetRelativePath(_rootPath, fullPath).Replace('\\', '/');
         if (Path.IsPathRooted(path) || path == ".." || path.StartsWith("../", StringComparison.Ordinal))
         {
-            Interlocked.Exchange(ref _fullRescanRequired, 1);
+            RequireFullRescan();
             return;
         }
 
         if (!_changes.Writer.TryWrite(path))
         {
-            Interlocked.Exchange(ref _fullRescanRequired, 1);
+            RequireFullRescan();
         }
+    }
+
+    private void RequireFullRescan()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _fullRescanRequired, 1);
+        _changes.Writer.TryWrite(string.Empty);
     }
 }

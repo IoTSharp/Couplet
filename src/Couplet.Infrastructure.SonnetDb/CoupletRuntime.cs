@@ -1,3 +1,8 @@
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using Couplet.Application.Capabilities;
 using Couplet.Application.Hosting;
 using Couplet.Application.Indexing;
@@ -9,6 +14,7 @@ using Couplet.Core.Evaluation;
 using Couplet.Core.Indexing;
 using Couplet.Core.Mcp;
 using Couplet.Core.Workspaces;
+using Microsoft.Win32.SafeHandles;
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
 using SonnetDB.Generations;
 #endif
@@ -20,7 +26,16 @@ namespace Couplet.Infrastructure.SonnetDb;
 /// </summary>
 public static class CoupletRuntime
 {
+    private static readonly TimeSpan DefaultWatchDebounce = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan MaximumWatchDebounce = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan DefaultWatchReconciliationInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MinimumWatchReconciliationInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan MaximumWatchReconciliationInterval = TimeSpan.FromMinutes(10);
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static readonly TimeSpan SnapshotRetryDelay = TimeSpan.FromMilliseconds(100);
+    private const int SnapshotBuildAttempts = 3;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+    private const uint VolumeNameGuid = 0x1;
     private const string ProcessCrashTestHooksEnvironmentVariable =
         "COUPLET_ENABLE_PROCESS_CRASH_TEST_HOOKS";
     private const string ProcessCrashTestPublishPauseOption =
@@ -43,6 +58,11 @@ public static class CoupletRuntime
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        if (ShouldRunIndexWatch(component, arguments))
+        {
+            return RunIndexWatchDaemonAsync(arguments, output, error, cancellationToken);
+        }
+
         if (component == ComponentKind.Cli && arguments.Count > 0)
         {
             string command = arguments[0].Trim().ToLowerInvariant();
@@ -90,6 +110,11 @@ public static class CoupletRuntime
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        if (ShouldRunIndexWatch(component, arguments))
+        {
+            return RunIndexWatchDaemonAsync(arguments, output, error, cancellationToken);
+        }
+
         if (component == ComponentKind.Cli && arguments.Count > 0)
         {
             string command = arguments[0].Trim().ToLowerInvariant();
@@ -151,6 +176,366 @@ public static class CoupletRuntime
             AppDomain.CurrentDomain.ProcessExit -= processExitHandler;
         }
     }
+
+    private static bool ShouldRunIndexWatch(ComponentKind component, IReadOnlyList<string> arguments) =>
+        component == ComponentKind.Daemon
+        && arguments.Count > 1
+        && string.Equals(arguments[0].Trim(), "run", StringComparison.OrdinalIgnoreCase);
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static Task<int> RunIndexWatchDaemonAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken) => RunIndexWatchDaemonCoreAsync(
+            arguments,
+            output,
+            error,
+            IndexSnapshotBuilder.BuildAsync,
+            discoveryObserver: null,
+            cancellationToken);
+
+    internal static Task<int> RunIndexWatchDaemonForTestingAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<DiscoveredWorkspace, string?, CancellationToken, Task<WorkspaceIndexSnapshot>> snapshotBuilder,
+        CancellationToken cancellationToken,
+        Action<DiscoveredWorkspace>? discoveryObserver = null)
+    {
+        ArgumentNullException.ThrowIfNull(snapshotBuilder);
+        return RunIndexWatchDaemonCoreAsync(
+            arguments,
+            output,
+            error,
+            snapshotBuilder,
+            discoveryObserver,
+            cancellationToken);
+    }
+
+    private static async Task<int> RunIndexWatchDaemonCoreAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        Func<DiscoveredWorkspace, string?, CancellationToken, Task<WorkspaceIndexSnapshot>> snapshotBuilder,
+        Action<DiscoveredWorkspace>? discoveryObserver,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseIndexWatchOptions(arguments, out IndexWatchOptions? options, out string? invalidReason))
+        {
+            return await WriteIndexWatchErrorAsync(error, invalidReason!)
+                .ConfigureAwait(false);
+        }
+
+        IndexWatchOptions watchOptions = options!;
+        try
+        {
+            string workspaceRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(watchOptions.WorkspacePath));
+            string databaseRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(watchOptions.DatabasePath));
+            string physicalWorkspaceRoot = ResolvePhysicalDirectory(workspaceRoot);
+            string physicalDatabaseCandidate = ResolvePhysicalDirectoryCandidate(databaseRoot);
+            if (IsWithinDirectory(physicalWorkspaceRoot, physicalDatabaseCandidate))
+            {
+                return await WriteIndexWatchErrorAsync(
+                    error,
+                    "watched_database_must_be_outside_workspace").ConfigureAwait(false);
+            }
+
+            Directory.CreateDirectory(physicalDatabaseCandidate);
+            string physicalDatabaseRoot = ResolvePhysicalDirectory(physicalDatabaseCandidate);
+            if (IsWithinDirectory(physicalWorkspaceRoot, physicalDatabaseRoot))
+            {
+                return await WriteIndexWatchErrorAsync(
+                    error,
+                    "watched_database_must_be_outside_workspace").ConfigureAwait(false);
+            }
+
+            WorkspaceDiscoveryPolicy policy = CreateWatchPolicy(watchOptions);
+            using var monitor = new WorkspaceChangeMonitor(workspaceRoot);
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspaceRoot,
+                policy,
+                cancellationToken).ConfigureAwait(false);
+            string workspaceId = discovered.Result.WorkspaceId;
+            using var store = new SonnetDbIndexGenerationStore(
+                physicalDatabaseRoot,
+                watchOptions.RetiredGenerationRetention);
+
+            IndexWatchPublishResult initial = await PublishCurrentWorkspaceAsync(
+                    workspaceRoot,
+                    physicalWorkspaceRoot,
+                    physicalDatabaseRoot,
+                    workspaceId,
+                    policy,
+                    store,
+                    snapshotBuilder,
+                    discoveryObserver,
+                    previousState: null,
+                    force: true,
+                    cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Initial watcher reconciliation must publish a status.");
+            if (!initial.Report.Staged)
+            {
+                return 1;
+            }
+
+            int? outputFailure = await WriteIndexWatchReportAsync(
+                initial.Report,
+                output,
+                error,
+                cancellationToken).ConfigureAwait(false);
+            if (outputFailure is { } initialOutputExitCode)
+            {
+                return initialOutputExitCode;
+            }
+
+            IndexWatchState state = initial.State;
+            using var watchCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            CancellationToken watchToken = watchCancellation.Token;
+            await using IAsyncEnumerator<WorkspaceChangeBatch> batches = monitor
+                .WatchAsync(watchOptions.WatchDebounce, watchToken)
+                .GetAsyncEnumerator(watchToken);
+            using var reconciliationTimer = new PeriodicTimer(watchOptions.WatchReconciliationInterval);
+            Task<bool> nextChange = batches.MoveNextAsync().AsTask();
+            Task<bool> nextReconciliation = reconciliationTimer
+                .WaitForNextTickAsync(watchToken)
+                .AsTask();
+            try
+            {
+                while (true)
+                {
+                    Task completed = await Task.WhenAny(nextChange, nextReconciliation).ConfigureAwait(false);
+                    if (completed == nextChange)
+                    {
+                        if (!await nextChange.ConfigureAwait(false))
+                        {
+                            return 0;
+                        }
+
+                        nextChange = batches.MoveNextAsync().AsTask();
+                    }
+                    else
+                    {
+                        if (!await nextReconciliation.ConfigureAwait(false))
+                        {
+                            return 0;
+                        }
+
+                        nextReconciliation = reconciliationTimer
+                            .WaitForNextTickAsync(watchToken)
+                            .AsTask();
+                    }
+
+                    IndexWatchPublishResult? current = await PublishCurrentWorkspaceAsync(
+                        workspaceRoot,
+                        physicalWorkspaceRoot,
+                        physicalDatabaseRoot,
+                        workspaceId,
+                        policy,
+                        store,
+                        snapshotBuilder,
+                        discoveryObserver,
+                        state,
+                        force: false,
+                        cancellationToken).ConfigureAwait(false);
+                    if (current is null)
+                    {
+                        continue;
+                    }
+
+                    state = current.State;
+                    if (!current.Report.Staged)
+                    {
+                        return 1;
+                    }
+
+                    outputFailure = await WriteIndexWatchReportAsync(
+                        current.Report,
+                        output,
+                        error,
+                        cancellationToken).ConfigureAwait(false);
+                    if (outputFailure is { } outputExitCode)
+                    {
+                        return outputExitCode;
+                    }
+                }
+            }
+            finally
+            {
+                watchCancellation.Cancel();
+                await ObserveWatchWaitCompletionAsync(nextChange, watchToken).ConfigureAwait(false);
+                await ObserveWatchWaitCompletionAsync(nextReconciliation, watchToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return 0;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return await WriteIndexWatchErrorAsync(error, "workspace_not_found").ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return await WriteIndexWatchErrorAsync(error, "index_io_failed").ConfigureAwait(false);
+        }
+        catch (DatabaseGenerationException exception)
+        {
+            return await WriteIndexWatchErrorAsync(error, exception.Code).ConfigureAwait(false);
+        }
+        catch (IndexWatchException exception)
+        {
+            return await WriteIndexWatchErrorAsync(
+                error,
+                exception.Reason,
+                exception.Code,
+                exception.ExitCode).ConfigureAwait(false);
+        }
+        catch (ArgumentException)
+        {
+            return await WriteIndexWatchErrorAsync(error, "invalid_watch_path").ConfigureAwait(false);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return await WriteIndexWatchErrorAsync(error, "watch_path_access_denied").ConfigureAwait(false);
+        }
+        catch (System.ComponentModel.Win32Exception exception) when (exception.NativeErrorCode == 5)
+        {
+            return await WriteIndexWatchErrorAsync(error, "watch_path_access_denied").ConfigureAwait(false);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return await WriteIndexWatchErrorAsync(error, "index_io_failed").ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<IndexWatchPublishResult?> PublishCurrentWorkspaceAsync(
+        string workspaceRoot,
+        string physicalWorkspaceRoot,
+        string physicalDatabaseRoot,
+        string workspaceId,
+        WorkspaceDiscoveryPolicy policy,
+        SonnetDbIndexGenerationStore store,
+        Func<DiscoveredWorkspace, string?, CancellationToken, Task<WorkspaceIndexSnapshot>> snapshotBuilder,
+        Action<DiscoveredWorkspace>? discoveryObserver,
+        IndexWatchState? previousState,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        for (int attempt = 1; attempt <= SnapshotBuildAttempts; attempt++)
+        {
+            bool retrySnapshot;
+            using (IndexWriterFence writerFence = await IndexWriterFence.AcquireAsync(
+                       physicalDatabaseRoot,
+                       workspaceId,
+                       cancellationToken).ConfigureAwait(false))
+            {
+                string currentPhysicalWorkspaceRoot = ResolvePhysicalDirectory(workspaceRoot);
+                if (!PathEquals(physicalWorkspaceRoot, currentPhysicalWorkspaceRoot)
+                    || IsWithinDirectory(currentPhysicalWorkspaceRoot, physicalDatabaseRoot))
+                {
+                    throw new IndexWatchException(
+                        "workspace_physical_identity_changed_while_watching",
+                        "workspace_changed",
+                        1);
+                }
+
+                DiscoveredWorkspace workspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                    workspaceRoot,
+                    policy,
+                    cancellationToken).ConfigureAwait(false);
+                discoveryObserver?.Invoke(workspace);
+                if (!string.Equals(workspaceId, workspace.Result.WorkspaceId, StringComparison.Ordinal))
+                {
+                    throw new IndexWatchException(
+                        "workspace_identity_changed_while_watching",
+                        "workspace_changed",
+                        1);
+                }
+
+                ActiveIndexPlanningSnapshot? active = store.ReadActivePlanningSnapshot(workspaceId);
+                string fingerprint = CreateWorkspaceFingerprint(workspace.Result);
+                if (!force
+                    && previousState is { } expected
+                    && string.Equals(expected.WorkspaceFingerprint, fingerprint, StringComparison.Ordinal)
+                    && expected.DatabaseGenerationRevision == active?.DatabaseGenerationRevision
+                    && string.Equals(
+                        expected.IndexRevision,
+                        active?.PlanningSnapshot.IndexRevision,
+                        StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                WorkspaceIndexSnapshot snapshot = await snapshotBuilder(
+                    workspace,
+                    active?.PlanningSnapshot.IndexRevision,
+                    cancellationToken).ConfigureAwait(false);
+                string snapshotPhysicalWorkspaceRoot = ResolvePhysicalDirectory(workspaceRoot);
+                if (!PathEquals(physicalWorkspaceRoot, snapshotPhysicalWorkspaceRoot)
+                    || IsWithinDirectory(snapshotPhysicalWorkspaceRoot, physicalDatabaseRoot))
+                {
+                    throw new IndexWatchException(
+                        "workspace_physical_identity_changed_during_snapshot",
+                        "workspace_changed",
+                        1);
+                }
+
+                retrySnapshot = snapshot.Failures.Count > 0;
+                if (!retrySnapshot)
+                {
+                    IncrementalIndexPlan plan = IncrementalIndexPlanner.PlanFromPublished(
+                        active?.PlanningSnapshot,
+                        snapshot);
+                    IndexStageReport report = store.StageAndPublish(
+                        snapshot,
+                        plan,
+                        active?.DatabaseGenerationRevision ?? 0,
+                        cancellationToken);
+                    return new IndexWatchPublishResult(
+                        report,
+                        new IndexWatchState(
+                            fingerprint,
+                            report.DatabaseGenerationRevision,
+                            report.Manifest.IndexRevision));
+                }
+            }
+
+            if (attempt == SnapshotBuildAttempts)
+            {
+                throw new IndexWatchException(
+                    "workspace_snapshot_incomplete",
+                    "indexing_failed",
+                    1);
+            }
+
+            await Task.Delay(SnapshotRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException("Snapshot retry loop exited unexpectedly.");
+    }
+#else
+    private static Task<int> RunIndexWatchDaemonAsync(
+        IReadOnlyList<string> arguments,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseIndexWatchOptions(arguments, out _, out string? invalidReason))
+        {
+            return WriteIndexWatchErrorAsync(error, invalidReason!);
+        }
+
+        _ = output;
+        _ = cancellationToken;
+        return WriteIndexWatchErrorAsync(
+            error,
+            "generation_publish_unavailable",
+            "capability_unavailable",
+            2);
+    }
+#endif
 
     private static async Task<int> RunIndexCommandAsync(
         string command,
@@ -255,6 +640,15 @@ public static class CoupletRuntime
                 workspace,
                 active?.PlanningSnapshot.IndexRevision,
                 cancellationToken).ConfigureAwait(false);
+            if (snapshot.Failures.Count != 0)
+            {
+                return await WriteIndexErrorAsync(
+                    error,
+                    "workspace_snapshot_incomplete",
+                    "indexing_failed",
+                    1).ConfigureAwait(false);
+            }
+
             IncrementalIndexPlan plan = IncrementalIndexPlanner.PlanFromPublished(
                 active?.PlanningSnapshot,
                 snapshot);
@@ -269,6 +663,15 @@ public static class CoupletRuntime
                 workspace,
                 previousIndexRevision: null,
                 cancellationToken).ConfigureAwait(false);
+            if (snapshot.Failures.Count != 0)
+            {
+                return await WriteIndexErrorAsync(
+                    error,
+                    "workspace_snapshot_incomplete",
+                    "indexing_failed",
+                    1).ConfigureAwait(false);
+            }
+
             IncrementalIndexPlan plan = IncrementalIndexPlanner.Plan(previous: null, snapshot);
             IndexStageReport report = store.Stage(snapshot, plan, cancellationToken);
 #endif
@@ -476,6 +879,20 @@ public static class CoupletRuntime
         };
     }
 
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static WorkspaceDiscoveryPolicy CreateWatchPolicy(IndexWatchOptions options)
+    {
+        WorkspaceDiscoveryPolicy defaults = WorkspaceDiscoveryService.DefaultPolicy;
+        return new WorkspaceDiscoveryPolicy
+        {
+            IgnorePatterns = defaults.IgnorePatterns.Concat(options.IgnorePatterns).ToArray(),
+            DenyPatterns = defaults.DenyPatterns.Concat(options.DenyPatterns).ToArray(),
+            GeneratedPatterns = defaults.GeneratedPatterns,
+            MaxSemanticFileBytes = defaults.MaxSemanticFileBytes,
+        };
+    }
+#endif
+
     private static string? Option(IReadOnlyList<string> arguments, string name)
     {
         for (int index = 1; index < arguments.Count - 1; index++)
@@ -502,6 +919,138 @@ public static class CoupletRuntime
         }
 
         return values;
+    }
+
+    private static bool TryParseIndexWatchOptions(
+        IReadOnlyList<string> arguments,
+        out IndexWatchOptions? options,
+        out string? invalidReason)
+    {
+        string? workspacePath = null;
+        string? databasePath = null;
+        TimeSpan debounce = DefaultWatchDebounce;
+        TimeSpan reconciliationInterval = DefaultWatchReconciliationInterval;
+        TimeSpan retention = TimeSpan.Zero;
+        var ignorePatterns = new List<string>();
+        var denyPatterns = new List<string>();
+        var singletons = new HashSet<string>(StringComparer.Ordinal);
+        options = null;
+        invalidReason = null;
+
+        for (int index = 1; index < arguments.Count; index++)
+        {
+            string name = arguments[index];
+            bool repeatable = name is "--ignore" or "--deny";
+            if (name is not ("--workspace"
+                or "--database"
+                or "--watch-debounce"
+                or "--watch-reconciliation-interval"
+                or "--retired-generation-retention"
+                or "--ignore"
+                or "--deny"))
+            {
+                invalidReason = name.StartsWith("--", StringComparison.Ordinal)
+                    ? "unknown_watch_option"
+                    : "unknown_watch_argument";
+                return false;
+            }
+
+            bool duplicate = !repeatable && !singletons.Add(name);
+            if (duplicate)
+            {
+                invalidReason = "duplicate_watch_option";
+                return false;
+            }
+
+            if (index == arguments.Count - 1
+                || arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                invalidReason = "missing_watch_option_value";
+                return false;
+            }
+
+            string value = arguments[++index];
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                invalidReason = "missing_watch_option_value";
+                return false;
+            }
+
+            switch (name)
+            {
+                case "--workspace":
+                    workspacePath = value;
+                    break;
+                case "--database":
+                    databasePath = value;
+                    break;
+                case "--watch-debounce":
+                    if (!TimeSpan.TryParseExact(
+                            value,
+                            "c",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out debounce)
+                        || debounce <= TimeSpan.Zero
+                        || debounce > MaximumWatchDebounce)
+                    {
+                        invalidReason = "invalid_watch_debounce";
+                        return false;
+                    }
+
+                    break;
+                case "--watch-reconciliation-interval":
+                    if (!TimeSpan.TryParseExact(
+                            value,
+                            "c",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out reconciliationInterval)
+                        || reconciliationInterval < MinimumWatchReconciliationInterval
+                        || reconciliationInterval > MaximumWatchReconciliationInterval)
+                    {
+                        invalidReason = "invalid_watch_reconciliation_interval";
+                        return false;
+                    }
+
+                    break;
+                case "--retired-generation-retention":
+                    if (!TimeSpan.TryParseExact(
+                            value,
+                            "c",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out retention)
+                        || retention < TimeSpan.Zero)
+                    {
+                        invalidReason = "invalid_retired_generation_retention";
+                        return false;
+                    }
+
+                    break;
+                case "--ignore":
+                    ignorePatterns.Add(value);
+                    break;
+                case "--deny":
+                    denyPatterns.Add(value);
+                    break;
+            }
+        }
+
+        if (workspacePath is null || databasePath is null)
+        {
+            invalidReason = workspacePath is null
+                ? "explicit_workspace_required"
+                : "explicit_database_required";
+            return false;
+        }
+
+        options = new IndexWatchOptions(
+            workspacePath,
+            databasePath,
+            debounce,
+            reconciliationInterval,
+            retention,
+            ignorePatterns,
+            denyPatterns);
+        return true;
     }
 
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
@@ -607,15 +1156,337 @@ public static class CoupletRuntime
     }
 #endif
 
-    private static async Task<int> WriteIndexErrorAsync(TextWriter error, string reason)
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static string CreateWorkspaceFingerprint(WorkspaceDiscoveryResult workspace)
+    {
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(4096);
+        try
+        {
+            AppendFingerprintValue(hash, buffer, "couplet.workspace-watch.v2");
+            AppendFingerprintValue(hash, buffer, workspace.WorkspaceId);
+            AppendFingerprintValue(hash, buffer, workspace.RepositoryIdentity);
+            AppendFingerprintValue(hash, buffer, workspace.WorktreeIdentity);
+            AppendFingerprintValue(hash, buffer, workspace.SourceRevision);
+            AppendFingerprintValue(hash, buffer, workspace.Branch);
+            AppendFingerprintValue(hash, buffer, workspace.HeadRevision);
+            Span<byte> metadata = stackalloc byte[14];
+            foreach (WorkspaceFileDescriptor file in workspace.Files.OrderBy(file => file.Path, StringComparer.Ordinal))
+            {
+                AppendFingerprintValue(hash, buffer, file.Path);
+                AppendFingerprintValue(hash, buffer, file.ContentHash);
+                AppendFingerprintValue(hash, buffer, file.Reason);
+                AppendFingerprintValue(hash, buffer, file.Language);
+                BinaryPrimitives.WriteInt64LittleEndian(metadata, file.Length);
+                BinaryPrimitives.WriteInt32LittleEndian(metadata[sizeof(long)..], (int)file.Disposition);
+                metadata[12] = file.TextOnly ? (byte)1 : (byte)0;
+                metadata[13] = file.IsSymlink ? (byte)1 : (byte)0;
+                hash.AppendData(metadata);
+            }
+
+            return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static void AppendFingerprintValue(IncrementalHash hash, byte[] buffer, string? value)
+    {
+        Span<byte> length = stackalloc byte[sizeof(int)];
+        if (value is null)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(length, -1);
+            hash.AppendData(length);
+            return;
+        }
+
+        int byteCount = Encoding.UTF8.GetByteCount(value);
+        BinaryPrimitives.WriteInt32LittleEndian(length, byteCount);
+        hash.AppendData(length);
+        if (byteCount == 0)
+        {
+            return;
+        }
+
+        Encoder encoder = Encoding.UTF8.GetEncoder();
+        ReadOnlySpan<char> remaining = value;
+        bool completed = false;
+        while (!completed)
+        {
+            encoder.Convert(
+                remaining,
+                buffer,
+                flush: true,
+                out int charsUsed,
+                out int bytesUsed,
+                out completed);
+            hash.AppendData(buffer.AsSpan(0, bytesUsed));
+            remaining = remaining[charsUsed..];
+        }
+    }
+
+    private static string ResolvePhysicalDirectoryCandidate(string path)
+    {
+        string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var missingSegments = new Stack<string>();
+        string existingAncestor = fullPath;
+        while (!Directory.Exists(existingAncestor))
+        {
+            string segment = Path.GetFileName(existingAncestor);
+            DirectoryInfo? parent = Directory.GetParent(existingAncestor);
+            if (parent is null || string.IsNullOrEmpty(segment))
+            {
+                throw new DirectoryNotFoundException("No existing ancestor was found for the configured directory.");
+            }
+
+            missingSegments.Push(segment);
+            existingAncestor = parent.FullName;
+        }
+
+        string physicalPath = ResolvePhysicalDirectory(existingAncestor);
+        while (missingSegments.TryPop(out string? segment))
+        {
+            physicalPath = Path.Combine(physicalPath, segment);
+        }
+
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(physicalPath));
+    }
+
+    private static string ResolvePhysicalDirectory(string path)
+    {
+        string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        if (!Directory.Exists(fullPath))
+        {
+            throw new DirectoryNotFoundException("The configured directory was not found.");
+        }
+
+        string root = Path.GetPathRoot(fullPath)
+            ?? throw new IOException("The configured directory has no filesystem root.");
+        string current = root;
+        string relative = Path.GetRelativePath(root, fullPath);
+        foreach (string segment in relative.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = new DirectoryInfo(Path.Combine(current, segment));
+            if (!directory.Exists)
+            {
+                throw new DirectoryNotFoundException("A configured directory component was not found.");
+            }
+
+            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0 || directory.LinkTarget is not null)
+            {
+                FileSystemInfo target = directory.ResolveLinkTarget(returnFinalTarget: true)
+                    ?? throw new IOException("A configured directory link could not be resolved.");
+                current = Path.GetFullPath(target.FullName);
+            }
+            else
+            {
+                current = directory.FullName;
+            }
+        }
+
+        string resolved = Path.TrimEndingDirectorySeparator(Path.GetFullPath(current));
+        return OperatingSystem.IsWindows()
+            ? GetFinalWindowsDirectoryPath(resolved)
+            : resolved;
+    }
+
+    private static string GetFinalWindowsDirectoryPath(string path)
+    {
+        using SafeFileHandle handle = CreateFileW(
+            path,
+            desiredAccess: 0,
+            FileShare.ReadWrite | FileShare.Delete,
+            IntPtr.Zero,
+            FileMode.Open,
+            FileFlagBackupSemantics,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        string? finalPath = TryGetFinalPathName(handle, VolumeNameGuid)
+            ?? TryGetFinalPathName(handle, flags: 0);
+        if (finalPath is null)
+        {
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        return Path.TrimEndingDirectorySeparator(finalPath);
+    }
+
+    private static string? TryGetFinalPathName(SafeFileHandle handle, uint flags)
+    {
+        int capacity = 512;
+        while (true)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(checked(capacity * sizeof(char)));
+            try
+            {
+                uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)capacity, flags);
+                if (length == 0)
+                {
+                    return null;
+                }
+
+                if (length < capacity)
+                {
+                    return Marshal.PtrToStringUni(buffer, checked((int)length));
+                }
+
+                capacity = checked((int)length + 1);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        FileShare shareMode,
+        IntPtr securityAttributes,
+        FileMode creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        SafeFileHandle file,
+        IntPtr filePath,
+        uint filePathLength,
+        uint flags);
+
+    private static bool PathEquals(string left, string right) => string.Equals(
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool IsWithinDirectory(string rootPath, string candidate)
+    {
+        string relative = Path.GetRelativePath(rootPath, candidate);
+        return relative == "."
+            || (!Path.IsPathRooted(relative)
+                && relative != ".."
+                && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !relative.StartsWith("../", StringComparison.Ordinal));
+    }
+
+    private static async Task<int?> WriteIndexWatchReportAsync(
+        IndexStageReport report,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        string json = CoupletJsonSerializer.Serialize(report);
+        try
+        {
+            await output.WriteLineAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
+            await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException
+            or ObjectDisposedException
+            or InvalidOperationException)
+        {
+            string reason = report.Published && !report.ReusedActiveGeneration
+                ? "index_committed_status_output_failed"
+                : "index_status_output_failed";
+            return await WriteIndexWatchErrorAsync(
+                error,
+                reason,
+                "output_failed",
+                74).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ObserveWatchWaitCompletionAsync(Task<bool> wait, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await wait.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private readonly record struct IndexWatchState(
+        string WorkspaceFingerprint,
+        long? DatabaseGenerationRevision,
+        string IndexRevision);
+
+    private sealed record IndexWatchPublishResult(
+        IndexStageReport Report,
+        IndexWatchState State);
+
+    private sealed class IndexWatchException : Exception
+    {
+        internal IndexWatchException(string reason, string code, int exitCode)
+            : base(reason)
+        {
+            Reason = reason;
+            Code = code;
+            ExitCode = exitCode;
+        }
+
+        internal string Reason { get; }
+
+        internal string Code { get; }
+
+        internal int ExitCode { get; }
+    }
+#endif
+
+    private sealed record IndexWatchOptions(
+        string WorkspacePath,
+        string DatabasePath,
+        TimeSpan WatchDebounce,
+        TimeSpan WatchReconciliationInterval,
+        TimeSpan RetiredGenerationRetention,
+        IReadOnlyList<string> IgnorePatterns,
+        IReadOnlyList<string> DenyPatterns);
+
+    private static async Task<int> WriteIndexWatchErrorAsync(
+        TextWriter error,
+        string reason,
+        string code = "invalid_request",
+        int exitCode = 64)
+    {
+        await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new ErrorReport
+        {
+            SchemaVersion = "couplet.index_watch.error.v1",
+            Code = code,
+            Component = "daemon",
+            Reason = reason,
+        })).ConfigureAwait(false);
+        return exitCode;
+    }
+
+    private static async Task<int> WriteIndexErrorAsync(
+        TextWriter error,
+        string reason,
+        string code = "invalid_request",
+        int exitCode = 64)
     {
         await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new ErrorReport
         {
             SchemaVersion = "couplet.index_stage.error.v1",
-            Code = "invalid_request",
+            Code = code,
             Component = "cli",
             Reason = reason,
         })).ConfigureAwait(false);
-        return 64;
+        return exitCode;
     }
 }

@@ -60,99 +60,38 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             }
 
             bool reserveQueryLeaseSlot = cursorRequest is { Cursor: null, Mode: "fulltext" };
-            using IndexQueryRequestLease requestLease = _store.AcquireIndexQuery(
+            IndexQueryRequestLease requestLease = _store.AcquireIndexQuery(
                 binding.WorkspaceId,
                 cursorRequest?.Cursor,
                 queryFingerprint,
                 reserveQueryLeaseSlot);
-            ActiveIndexQueryLease lease = requestLease.Lease;
-            GenerationManifest manifest = lease.Manifest;
-            if (lease.PlanningSnapshot.RepositoryIdentity is { } repositoryIdentity
-                && !string.Equals(repositoryIdentity, binding.RepositoryIdentity, StringComparison.Ordinal))
+            McpDispatchResult result;
+            try
             {
-                throw new InvalidDataException("active_generation_repository_identity_invalid");
-            }
-
-            WorkspaceBinding activeBinding = ActiveBinding(binding, manifest);
-            McpError? revisionError = ValidateRevisionSelector(
-                request.RevisionSelector,
-                activeBinding,
-                correlationId);
-            if (revisionError is not null)
-            {
-                return McpDispatchResult.FromError(revisionError);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return Error(
-                    McpErrorCodes.Cancelled,
-                    "client_cancelled",
-                    false,
-                    activeBinding,
-                    correlationId);
-            }
-
-            McpDispatchResult result = request switch
-            {
-                WorkspaceStatusRequest status => ExecuteWorkspaceStatus(
-                    status,
+                result = ExecuteWithQueryLease(
+                    request,
                     binding,
-                    activeBinding,
-                    manifest,
+                    cursorRequest,
+                    queryFingerprint,
+                    requestLease,
                     stopwatch,
                     correlationId,
-                    cancellationToken),
-                CodeSearchRequest search when search.Mode is "exact" or "fulltext" => ExecuteCodeSearch(
-                    search,
-                    binding,
-                    activeBinding,
-                    lease,
-                    requestLease.CursorRecognized,
-                    manifest,
-                    stopwatch,
-                    correlationId,
-                    cancellationToken),
-                SymbolGetRequest symbol => ExecuteSymbolGet(
-                    symbol,
-                    binding,
-                    activeBinding,
-                    lease,
-                    manifest,
-                    stopwatch,
-                    correlationId,
-                    cancellationToken),
-                _ => Error(
-                    McpErrorCodes.CapabilityUnavailable,
-                    "active_query_tool_not_connected",
-                    true,
-                    activeBinding,
-                    correlationId,
-                    "workspace.index",
-                    "CG-005"),
-            };
-            if (result.CodeSearch?.NextCursor is not string nextCursor)
+                    cancellationToken);
+            }
+            catch
             {
+                DisposePreservingPrimaryFailure(requestLease);
+                throw;
+            }
+
+            if (result.Error is not null)
+            {
+                DisposePreservingPrimaryFailure(requestLease);
                 return result;
             }
 
-            return requestLease.TryRetain(nextCursor, queryFingerprint!) switch
-            {
-                IndexQueryCursorRetentionResult.Retained => result,
-                IndexQueryCursorRetentionResult.Expired => Error(
-                    McpErrorCodes.StaleRevision,
-                    "query_cursor_expired",
-                    false,
-                    activeBinding,
-                    correlationId),
-                IndexQueryCursorRetentionResult.CapacityExceeded => Error(
-                    McpErrorCodes.BudgetExhausted,
-                    "query_cursor_lease_capacity_exhausted",
-                    true,
-                    activeBinding,
-                    correlationId),
-                _ => throw new InvalidOperationException("Unknown cursor retention result."),
-            };
+            requestLease.Dispose();
+            return result;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -195,6 +134,16 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 correlationId);
         }
         catch (IndexQueryCursorLeaseException exception)
+            when (exception.Failure == IndexQueryCursorLeaseFailure.Stale)
+        {
+            return Error(
+                McpErrorCodes.StaleRevision,
+                "query_cursor_stale",
+                false,
+                binding,
+                correlationId);
+        }
+        catch (IndexQueryCursorLeaseException exception)
             when (exception.Failure == IndexQueryCursorLeaseFailure.CapacityExceeded)
         {
             return Error(
@@ -203,6 +152,27 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 true,
                 binding,
                 correlationId);
+        }
+        catch (IndexQueryCursorLeaseException exception)
+            when (exception.Failure == IndexQueryCursorLeaseFailure.RegistryUnavailable)
+        {
+            return Error(
+                McpErrorCodes.IndexCorrupt,
+                "query_cursor_registry_unavailable",
+                false,
+                binding,
+                correlationId,
+                "workspace.index");
+        }
+        catch (IndexQueryGenerationValidationException)
+        {
+            return Error(
+                McpErrorCodes.IndexCorrupt,
+                "active_generation_validation_failed",
+                false,
+                binding,
+                correlationId,
+                "workspace.index");
         }
         catch (Exception exception) when (exception is InvalidDataException
             or IOException
@@ -216,6 +186,125 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 binding,
                 correlationId,
                 "workspace.index");
+        }
+    }
+
+    private McpDispatchResult ExecuteWithQueryLease(
+        McpToolRequest request,
+        WorkspaceBinding binding,
+        CodeSearchRequest? cursorRequest,
+        string? queryFingerprint,
+        IndexQueryRequestLease requestLease,
+        Stopwatch stopwatch,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        ActiveIndexQueryLease lease = requestLease.Lease;
+        GenerationManifest manifest = lease.Manifest;
+        if (lease.PlanningSnapshot.RepositoryIdentity is { } repositoryIdentity
+            && !string.Equals(repositoryIdentity, binding.RepositoryIdentity, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("active_generation_repository_identity_invalid");
+        }
+
+        WorkspaceBinding activeBinding = ActiveBinding(binding, manifest);
+        McpError? revisionError = ValidateRevisionSelector(
+            request.RevisionSelector,
+            activeBinding,
+            correlationId);
+        if (revisionError is not null)
+        {
+            return McpDispatchResult.FromError(revisionError);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Error(
+                McpErrorCodes.Cancelled,
+                "client_cancelled",
+                false,
+                activeBinding,
+                correlationId);
+        }
+
+        McpDispatchResult result = request switch
+        {
+            WorkspaceStatusRequest status => ExecuteWorkspaceStatus(
+                status,
+                binding,
+                activeBinding,
+                manifest,
+                stopwatch,
+                correlationId,
+                cancellationToken),
+            CodeSearchRequest search when search.Mode is "exact" or "fulltext" => ExecuteCodeSearch(
+                search,
+                binding,
+                activeBinding,
+                requestLease,
+                requestLease.CursorRecognized,
+                manifest,
+                stopwatch,
+                correlationId,
+                cancellationToken),
+            SymbolGetRequest symbol => ExecuteSymbolGet(
+                symbol,
+                binding,
+                activeBinding,
+                lease,
+                manifest,
+                stopwatch,
+                correlationId,
+                cancellationToken),
+            _ => Error(
+                McpErrorCodes.CapabilityUnavailable,
+                "active_query_tool_not_connected",
+                true,
+                activeBinding,
+                correlationId,
+                "workspace.index",
+                "CG-005"),
+        };
+        if (result.CodeSearch?.NextCursor is not string nextCursor)
+        {
+            return result;
+        }
+
+        return requestLease.TryRetain(nextCursor, queryFingerprint!) switch
+        {
+            IndexQueryCursorRetentionResult.Retained => result,
+            IndexQueryCursorRetentionResult.Expired => Error(
+                McpErrorCodes.StaleRevision,
+                "query_cursor_expired",
+                false,
+                activeBinding,
+                correlationId),
+            IndexQueryCursorRetentionResult.CapacityExceeded => Error(
+                McpErrorCodes.BudgetExhausted,
+                "query_cursor_lease_capacity_exhausted",
+                true,
+                activeBinding,
+                correlationId),
+            IndexQueryCursorRetentionResult.Conflict => Error(
+                McpErrorCodes.InvalidRequest,
+                "query_cursor_invalid",
+                false,
+                activeBinding,
+                correlationId),
+            _ => throw new InvalidOperationException("Unknown cursor retention result."),
+        };
+    }
+
+    private static void DisposePreservingPrimaryFailure(IndexQueryRequestLease requestLease)
+    {
+        try
+        {
+            requestLease.Dispose();
+        }
+        catch (IndexQueryCursorLeaseException exception)
+            when (exception.Failure == IndexQueryCursorLeaseFailure.RegistryUnavailable)
+        {
+            // The primary request failure wins; the faulted registry remains observable by later requests.
         }
     }
 
@@ -332,13 +421,14 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
         CodeSearchRequest search,
         WorkspaceBinding binding,
         WorkspaceBinding activeBinding,
-        ActiveIndexQueryLease lease,
+        IndexQueryRequestLease requestLease,
         bool cursorRecognized,
         GenerationManifest manifest,
         Stopwatch stopwatch,
         string correlationId,
         CancellationToken cancellationToken)
     {
+        ActiveIndexQueryLease lease = requestLease.Lease;
         string queryFingerprint = CreateCodeSearchFingerprint(search);
         long offset = 0;
         if (search.Cursor is not null)
@@ -356,7 +446,7 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             byte[] cursorState;
             try
             {
-                cursorState = lease.ReadCursor(search.Cursor, queryFingerprint);
+                cursorState = requestLease.ReadCursor(search.Cursor, queryFingerprint);
             }
             catch (DatabaseGenerationException exception)
                 when (exception.Code == DatabaseGenerationErrorCodes.CursorStale)
@@ -531,7 +621,7 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             IReadOnlyList<ActiveIndexSearchHit> selected = filtered.Take(selectedCount).ToArray();
             (IReadOnlyList<CodeSearchItem> items, IReadOnlyList<Evidence> evidence) = MapSearchResults(selected, search.Mode);
             string? nextCursor = truncated
-                ? CreateCodeSearchCursor(lease, queryFingerprint, checked(offset + selectedCount))
+                ? CreateCodeSearchCursor(requestLease, queryFingerprint, checked(offset + selectedCount))
                 : null;
             int consumedBytes = 0;
             int consumedTokens = 0;
@@ -1033,14 +1123,14 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
     }
 
     private static string CreateCodeSearchCursor(
-        ActiveIndexQueryLease lease,
+        IndexQueryRequestLease requestLease,
         string queryFingerprint,
         long offset)
     {
         Span<byte> state = stackalloc byte[CursorStateLength];
         BinaryPrimitives.WriteInt64LittleEndian(state, offset);
         _ = Guid.NewGuid().TryWriteBytes(state[sizeof(long)..]);
-        return lease.CreateCursor(queryFingerprint, state);
+        return requestLease.CreateCursor(queryFingerprint, state);
     }
 
     private static McpToolResponse<SymbolDetailsItem> CreateSymbolDetailsResponse(

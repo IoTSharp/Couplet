@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -32,7 +33,17 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private const string _planningRole = "index_planning";
     private const string _planningSnapshotKey = "planning_snapshot";
     private const string _publishedManifestKey = "generation_manifest";
+    private const string _queryCursorSigningKeyKey = "query_cursor_signing_key:v1";
+    private const string _queryCursorRecordPrefix = "query_cursor:v1:";
+    private const int _queryCursorEnvelopeVersion = 1;
+    private const int _queryCursorRecordVersion = 1;
+    private const int _queryCursorSigningKeyLength = 32;
+    private const int _queryCursorSignatureLength = 32;
+    private const int _queryCursorHashLength = 32;
     private const int _maximumRetainedQueryLeases = 128;
+    private static readonly byte[] _queryCursorSignatureDomain =
+        Encoding.ASCII.GetBytes("Couplet.CodeSearchCursor.v1\0");
+    private static readonly UTF8Encoding _queryCursorUtf8 = new(false, true);
     private static readonly TimeSpan _defaultQueryCursorLeaseRetention = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan _maximumQueryLeaseTimerDueTime =
         TimeSpan.FromMilliseconds(uint.MaxValue - 1d);
@@ -44,12 +55,13 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private readonly bool _backgroundMaintenanceEnabled;
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
     private readonly object _retainedQueryLeaseSync = new();
-    private readonly Dictionary<string, RetainedIndexQueryCursor> _retainedQueryLeases =
-        new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, RetainedIndexQueryCursor> _retainedQueryLeases = [];
     private readonly ITimer _retainedQueryLeaseTimer;
+    private readonly byte[] _queryCursorSigningKey;
     private readonly TimeSpan _queryCursorLeaseRetention;
     private readonly TimeSpan _retiredGenerationRetention;
     private readonly TimeProvider _timeProvider;
+    private bool _queryCursorRegistryFaulted;
     private int _queryLeaseSlotCount;
 #endif
     private bool _disposed;
@@ -148,14 +160,23 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         _control = _database.Keyspaces.Open(_controlKeyspaceName);
         try
         {
+            _queryCursorSigningKey = LoadOrCreateQueryCursorSigningKey();
             _retainedQueryLeaseTimer = _timeProvider.CreateTimer(
-                static state => ((SonnetDbIndexGenerationStore)state!).ReleaseExpiredRetainedQueryLeases(),
+                static state => ((SonnetDbIndexGenerationStore)state!).RunRetainedQueryLeaseTimerCallback(),
                 this,
                 Timeout.InfiniteTimeSpan,
                 Timeout.InfiniteTimeSpan);
+            RestoreRetainedQueryLeases();
         }
         catch
         {
+            _retainedQueryLeaseTimer?.Dispose();
+            foreach (RetainedIndexQueryCursor retained in _retainedQueryLeases.Values)
+            {
+                retained.Lease.Dispose();
+            }
+
+            _retainedQueryLeases.Clear();
             _database.Dispose();
             throw;
         }
@@ -445,17 +466,45 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
         DatabaseGenerationQueryLease lease = _database.Generations.AcquireActive(workspaceId);
+        return CreateIndexQueryLease(workspaceId, lease);
+    }
+
+    private ActiveIndexQueryLease AcquireIndexQueryRevision(string workspaceId, long revision)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(revision);
+        DatabaseGenerationQueryLease lease = _database.Generations.Acquire(workspaceId, revision);
+        return CreateIndexQueryLease(workspaceId, lease);
+    }
+
+    private ActiveIndexQueryLease CreateIndexQueryLease(
+        string workspaceId,
+        DatabaseGenerationQueryLease lease)
+    {
         try
         {
-            DatabaseGenerationResource planningResource = lease.GetRequiredResource(
-                _planningRole,
-                DatabaseGenerationResourceKind.KvKeyspace);
-            DatabaseGenerationResource documentsResource = lease.GetRequiredResource(
-                _documentsRole,
-                DatabaseGenerationResourceKind.DocumentCollection);
-            DatabaseGenerationResource fullTextResource = lease.GetRequiredResource(
-                _fullTextRole,
-                DatabaseGenerationResourceKind.DocumentFullTextIndex);
+            DatabaseGenerationResource planningResource;
+            DatabaseGenerationResource documentsResource;
+            DatabaseGenerationResource fullTextResource;
+            try
+            {
+                planningResource = lease.GetRequiredResource(
+                    _planningRole,
+                    DatabaseGenerationResourceKind.KvKeyspace);
+                documentsResource = lease.GetRequiredResource(
+                    _documentsRole,
+                    DatabaseGenerationResourceKind.DocumentCollection);
+                fullTextResource = lease.GetRequiredResource(
+                    _fullTextRole,
+                    DatabaseGenerationResourceKind.DocumentFullTextIndex);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_resource_contract_invalid",
+                    exception);
+            }
 
             string indexRevision = lease.Generation.GenerationId;
             if (!string.Equals(lease.Generation.Stream, workspaceId, StringComparison.Ordinal)
@@ -470,7 +519,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 || !string.Equals(fullTextResource.Name, _fullTextIndexName, StringComparison.Ordinal)
                 || !string.Equals(fullTextResource.ParentName, documentsResource.Name, StringComparison.Ordinal))
             {
-                throw new InvalidDataException("active_generation_resource_identity_invalid");
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_resource_identity_invalid");
             }
 
             KvKeyspace planningKeyspace = _database.Keyspaces.Open(planningResource.Name);
@@ -478,7 +528,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             byte[]? manifestBytes = planningKeyspace.Get(_publishedManifestKey);
             if (planningBytes is null || manifestBytes is null)
             {
-                throw new InvalidDataException("active_generation_metadata_missing");
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_metadata_missing");
             }
 
             IndexPlanningSnapshot planning;
@@ -492,7 +543,9 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             }
             catch (System.Text.Json.JsonException exception)
             {
-                throw new InvalidDataException("active_generation_metadata_invalid", exception);
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_metadata_invalid",
+                    exception);
             }
 
             if (GenerationContractValidator.Validate(manifest).Count != 0
@@ -509,13 +562,15 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 || manifest.Checksum.Any(character => character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
                 || planning.Files.GroupBy(file => file.Path, StringComparer.Ordinal).Any(group => group.Count() != 1))
             {
-                throw new InvalidDataException("active_generation_metadata_inconsistent");
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_metadata_inconsistent");
             }
 
             DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(documentsResource.Name);
             if (!HasRequiredQuerySchema(schema, fullTextResource.Name))
             {
-                throw new InvalidDataException("active_generation_document_schema_invalid");
+                throw new IndexQueryGenerationValidationException(
+                    "active_generation_document_schema_invalid");
             }
 
             return new ActiveIndexQueryLease(
@@ -569,7 +624,10 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                     AcquireActiveIndexQuery(workspaceId),
                     QueryCursorLeaseExpirationUtc(),
                     cursorRecognized: false,
-                    ownsQueryLeaseSlot);
+                    ownsQueryLeaseSlot,
+                    Guid.NewGuid(),
+                    claimedRecordVersion: 0,
+                    innerCursor: null);
             }
             catch
             {
@@ -584,40 +642,154 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
         ArgumentException.ThrowIfNullOrWhiteSpace(cursor);
         ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
-        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
-        List<RetainedIndexQueryCursor> expired;
-        RetainedIndexQueryCursor? retained = null;
-        bool requestedCursorExpired;
-        bool requestedCursorMismatch = false;
-        lock (_retainedQueryLeaseSync)
+        if (!TryDecodeQueryCursor(cursor, out DurableQueryCursorEnvelope? envelope)
+            || envelope is null)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            expired = RemoveExpiredRetainedQueryLeasesUnsafe(
-                nowUtc,
-                cursor,
-                out requestedCursorExpired);
-            if (!requestedCursorExpired
-                && _retainedQueryLeases.TryGetValue(cursor, out RetainedIndexQueryCursor? candidate))
+            throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Mismatch);
+        }
+
+        byte[] cursorHash = SHA256.HashData(Encoding.UTF8.GetBytes(cursor));
+        List<RetainedIndexQueryCursor> expired = [];
+        RetainedIndexQueryCursor? retained = null;
+        RetainedIndexQueryCursor? failedTransition = null;
+        Exception? transitionFailure = null;
+        long claimedRecordVersion = 0;
+        bool requestedCursorExpired = false;
+        bool requestedCursorMismatch = false;
+        try
+        {
+            lock (_retainedQueryLeaseSync)
             {
-                if (!string.Equals(candidate.WorkspaceId, workspaceId, StringComparison.Ordinal)
-                    || !string.Equals(
-                        candidate.QueryFingerprint,
-                        queryFingerprint,
-                        StringComparison.Ordinal))
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                ThrowIfQueryCursorRegistryUnavailableUnsafe();
+                DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+                expired = RemoveExpiredRetainedQueryLeasesUnsafe(
+                    nowUtc,
+                    envelope.ChainId,
+                    out requestedCursorExpired);
+                requestedCursorExpired |= envelope.ExpiresAtUtc <= nowUtc;
+
+                RetainedIndexQueryCursor? transitionCandidate = null;
+                DurableQueryCursorRecord? transitionRecord = null;
+                try
                 {
-                    requestedCursorMismatch = true;
+                    if (!requestedCursorExpired
+                        && _retainedQueryLeases.TryGetValue(
+                            envelope.ChainId,
+                            out RetainedIndexQueryCursor? candidate))
+                    {
+                        if (!string.Equals(candidate.WorkspaceId, workspaceId, StringComparison.Ordinal)
+                            || !string.Equals(
+                                candidate.QueryFingerprint,
+                                queryFingerprint,
+                                StringComparison.Ordinal)
+                            || candidate.GenerationRevision != envelope.GenerationRevision
+                            || candidate.ExpiresAtUtc != envelope.ExpiresAtUtc
+                            || !CryptographicOperations.FixedTimeEquals(candidate.CursorHash, cursorHash))
+                        {
+                            requestedCursorMismatch = true;
+                        }
+                        else
+                        {
+                            transitionCandidate = candidate;
+                            transitionRecord = candidate.Record with
+                            {
+                                State = DurableQueryCursorState.Claimed,
+                            };
+                            QueryCursorTransitionFaultTestHook?.Invoke(
+                                IndexQueryCursorTransitionFaultPoint.BeforeClaimCas);
+                            KvCasResult claim = _control.CompareAndSet(
+                                QueryCursorRecordKey(envelope.ChainId),
+                                candidate.RegistryVersion,
+                                EncodeQueryCursorRecord(transitionRecord));
+                            if (!claim.Succeeded)
+                            {
+                                requestedCursorMismatch = true;
+                                transitionCandidate = null;
+                                transitionRecord = null;
+                            }
+                            else
+                            {
+                                _retainedQueryLeases.Remove(envelope.ChainId);
+                                retained = candidate;
+                                claimedRecordVersion = claim.NewVersion!.Value;
+                                QueryCursorTransitionFaultTestHook?.Invoke(
+                                    IndexQueryCursorTransitionFaultPoint.AfterClaimCas);
+                                _control.CreateSnapshot();
+                            }
+                        }
+                    }
+
+                    ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
                 }
-                else
+                catch (Exception exception)
                 {
-                    _retainedQueryLeases.Remove(cursor);
-                    retained = candidate;
+                    transitionFailure = exception;
+                    _queryCursorRegistryFaulted = true;
+                    if (transitionCandidate is not null)
+                    {
+                        _retainedQueryLeases.Remove(envelope.ChainId);
+                        retained = null;
+                        failedTransition = transitionCandidate;
+                        if (transitionRecord is not null)
+                        {
+                            _ = TryFailClosedObservedQueryCursorRecord(
+                                envelope.ChainId,
+                                transitionRecord,
+                                allowCursorHashMismatch: false);
+                        }
+                    }
+                }
+            }
+        }
+        finally
+        {
+            DisposeRetainedQueryLeasesAndReleaseSlots(expired, deleteDurableRecords: true);
+            if (failedTransition is not null)
+            {
+                try
+                {
+                    failedTransition.Lease.Dispose();
+                }
+                finally
+                {
+                    ReleaseIndexQueryLeaseSlot();
+                }
+            }
+        }
+
+        if (transitionFailure is not null)
+        {
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable,
+                transitionFailure);
+        }
+
+        if (IsQueryCursorRegistryFaulted())
+        {
+            if (retained is not null)
+            {
+                try
+                {
+                    ReleaseClaimedIndexQueryCursor(retained.ChainId, claimedRecordVersion);
+                }
+                finally
+                {
+                    try
+                    {
+                        retained.Lease.Dispose();
+                    }
+                    finally
+                    {
+                        ReleaseIndexQueryLeaseSlot();
+                    }
                 }
             }
 
-            ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable);
         }
 
-        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
         if (requestedCursorExpired)
         {
             throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Expired);
@@ -635,61 +807,171 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 retained.Lease,
                 retained.ExpiresAtUtc,
                 cursorRecognized: true,
-                ownsQueryLeaseSlot: true);
+                ownsQueryLeaseSlot: true,
+                retained.ChainId,
+                claimedRecordVersion,
+                envelope.InnerCursor);
         }
 
-        return new IndexQueryRequestLease(
-            this,
-            AcquireActiveIndexQuery(workspaceId),
-            QueryCursorLeaseExpirationUtc(),
-            cursorRecognized: false,
-            ownsQueryLeaseSlot: false);
+        try
+        {
+            using DatabaseGenerationQueryLease _ = _database.Generations.Acquire(
+                workspaceId,
+                envelope.GenerationRevision);
+        }
+        catch (DatabaseGenerationException exception)
+            when (exception.Code == DatabaseGenerationErrorCodes.RevisionUnavailable)
+        {
+            throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Stale);
+        }
+
+        throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Mismatch);
     }
 
     internal IndexQueryCursorRetentionResult RetainIndexQueryCursor(
         string cursor,
         string queryFingerprint,
         ActiveIndexQueryLease lease,
-        DateTimeOffset expiresAtUtc)
+        DateTimeOffset expiresAtUtc,
+        Guid chainId,
+        long claimedRecordVersion)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(cursor);
         ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
         ArgumentNullException.ThrowIfNull(lease);
-        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
-        List<RetainedIndexQueryCursor> expired;
-        IndexQueryCursorRetentionResult result;
-        lock (_retainedQueryLeaseSync)
+        if (!TryDecodeQueryCursor(cursor, out DurableQueryCursorEnvelope? envelope)
+            || envelope is null
+            || envelope.ChainId != chainId
+            || envelope.GenerationRevision != lease.DatabaseGenerationRevision
+            || envelope.ExpiresAtUtc != expiresAtUtc)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            expired = RemoveExpiredRetainedQueryLeasesUnsafe(
-                nowUtc,
-                requestedCursor: null,
-                out _);
-            if (expiresAtUtc <= nowUtc)
-            {
-                result = IndexQueryCursorRetentionResult.Expired;
-            }
-            else if (_retainedQueryLeases.ContainsKey(cursor))
-            {
-                result = IndexQueryCursorRetentionResult.CapacityExceeded;
-            }
-            else
-            {
-                _retainedQueryLeases.Add(
-                    cursor,
-                    new RetainedIndexQueryCursor(
-                        lease.Manifest.WorkspaceId,
-                        queryFingerprint,
-                        expiresAtUtc,
-                        lease));
-                result = IndexQueryCursorRetentionResult.Retained;
-            }
-
-            ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+            throw new InvalidDataException("query_cursor_envelope_inconsistent");
         }
 
-        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
+        List<RetainedIndexQueryCursor> expired = [];
+        Exception? transitionFailure = null;
+        DurableQueryCursorRecord? retainedRecordForAbort = null;
+        IndexQueryCursorRetentionResult result = IndexQueryCursorRetentionResult.Conflict;
+        try
+        {
+            lock (_retainedQueryLeaseSync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                ThrowIfQueryCursorRegistryUnavailableUnsafe();
+                DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+                expired = RemoveExpiredRetainedQueryLeasesUnsafe(
+                    nowUtc,
+                    requestedChainId: null,
+                    out _);
+
+                DurableQueryCursorRecord? transitionRecord = null;
+                bool retainedInMemory = false;
+                try
+                {
+                    if (expiresAtUtc <= nowUtc)
+                    {
+                        result = IndexQueryCursorRetentionResult.Expired;
+                    }
+                    else if (_retainedQueryLeases.ContainsKey(chainId))
+                    {
+                        result = IndexQueryCursorRetentionResult.Conflict;
+                    }
+                    else
+                    {
+                        byte[] cursorHash = SHA256.HashData(Encoding.UTF8.GetBytes(cursor));
+                        transitionRecord = new DurableQueryCursorRecord(
+                            DurableQueryCursorState.Available,
+                            lease.Manifest.WorkspaceId,
+                            queryFingerprint,
+                            lease.DatabaseGenerationRevision,
+                            expiresAtUtc,
+                            cursorHash);
+                        QueryCursorTransitionFaultTestHook?.Invoke(
+                            IndexQueryCursorTransitionFaultPoint.BeforeRetainCas);
+                        KvCasResult retained = _control.CompareAndSet(
+                            QueryCursorRecordKey(chainId),
+                            claimedRecordVersion,
+                            EncodeQueryCursorRecord(transitionRecord));
+                        if (!retained.Succeeded)
+                        {
+                            result = IndexQueryCursorRetentionResult.Conflict;
+                            transitionRecord = null;
+                        }
+                        else
+                        {
+                            QueryCursorTransitionFaultTestHook?.Invoke(
+                                IndexQueryCursorTransitionFaultPoint.AfterRetainCas);
+                            _control.CreateSnapshot();
+                            _retainedQueryLeases.Add(
+                                chainId,
+                                new RetainedIndexQueryCursor(
+                                    chainId,
+                                    lease.Manifest.WorkspaceId,
+                                    queryFingerprint,
+                                    lease.DatabaseGenerationRevision,
+                                    expiresAtUtc,
+                                    cursorHash,
+                                    retained.NewVersion!.Value,
+                                    transitionRecord,
+                                    lease));
+                            retainedInMemory = true;
+                            retainedRecordForAbort = transitionRecord;
+                            result = IndexQueryCursorRetentionResult.Retained;
+                        }
+                    }
+
+                    ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+                }
+                catch (Exception exception)
+                {
+                    transitionFailure = exception;
+                    _queryCursorRegistryFaulted = true;
+                    if (retainedInMemory)
+                    {
+                        _retainedQueryLeases.Remove(chainId);
+                    }
+
+                    if (transitionRecord is not null)
+                    {
+                        _ = TryFailClosedObservedQueryCursorRecord(
+                            chainId,
+                            transitionRecord,
+                            allowCursorHashMismatch: claimedRecordVersion > 0);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            DisposeRetainedQueryLeasesAndReleaseSlots(expired, deleteDurableRecords: true);
+        }
+
+        if (transitionFailure is not null)
+        {
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable,
+                transitionFailure);
+        }
+
+        if (IsQueryCursorRegistryFaulted())
+        {
+            if (retainedRecordForAbort is not null)
+            {
+                lock (_retainedQueryLeaseSync)
+                {
+                    _retainedQueryLeases.Remove(chainId);
+                    _ = TryFailClosedObservedQueryCursorRecord(
+                        chainId,
+                        retainedRecordForAbort,
+                        allowCursorHashMismatch: false);
+                }
+            }
+
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable);
+        }
+
         return result;
     }
 
@@ -1095,6 +1377,80 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
     internal Action<IndexGenerationPublishFaultPoint>? PublishFaultTestHook { get; set; }
 
+    internal Action<IndexQueryCursorTransitionFaultPoint>? QueryCursorTransitionFaultTestHook { get; set; }
+
+    internal void AddUnavailableRetainedQueryCursorRecordForTest(
+        string workspaceId,
+        long generationRevision,
+        DateTimeOffset expiresAtUtc)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(generationRevision);
+        var record = new DurableQueryCursorRecord(
+            DurableQueryCursorState.Available,
+            workspaceId,
+            "test-query-fingerprint",
+            generationRevision,
+            expiresAtUtc.ToUniversalTime(),
+            new byte[_queryCursorHashLength]);
+        KvCasResult result = _control.CompareAndSet(
+            QueryCursorRecordKey(Guid.NewGuid()),
+            expectedVersion: 0,
+            EncodeQueryCursorRecord(record));
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException("Unable to create the unavailable cursor test record.");
+        }
+
+        _control.CreateSnapshot();
+    }
+
+    internal void AddSemanticallyInvalidRetainedQueryCursorRecordForTest(
+        long generationRevision,
+        DateTimeOffset expiresAtUtc)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(generationRevision);
+        var record = new DurableQueryCursorRecord(
+            DurableQueryCursorState.Available,
+            " ",
+            "test-query-fingerprint",
+            generationRevision,
+            expiresAtUtc.ToUniversalTime(),
+            new byte[_queryCursorHashLength]);
+        KvCasResult result = _control.CompareAndSet(
+            QueryCursorRecordKey(Guid.NewGuid()),
+            expectedVersion: 0,
+            EncodeQueryCursorRecord(record));
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException("Unable to create the invalid cursor test record.");
+        }
+
+        _control.CreateSnapshot();
+    }
+
+    internal void RemoveGenerationManifestForTest(string workspaceId, long generationRevision)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(generationRevision);
+        using DatabaseGenerationQueryLease lease = _database.Generations.Acquire(
+            workspaceId,
+            generationRevision);
+        DatabaseGenerationResource planningResource = lease.GetRequiredResource(
+            _planningRole,
+            DatabaseGenerationResourceKind.KvKeyspace);
+        KvKeyspace planningKeyspace = _database.Keyspaces.Open(planningResource.Name);
+        if (!planningKeyspace.Delete(_publishedManifestKey))
+        {
+            throw new InvalidOperationException("Unable to remove the generation manifest for the test.");
+        }
+
+        planningKeyspace.CreateSnapshot();
+    }
+
     internal IReadOnlyList<long> ListGenerationRevisionsForTest(string workspaceId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1287,7 +1643,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         }
 
         _retainedQueryLeaseTimer.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        DisposeRetainedQueryLeasesAndReleaseSlots(retained);
+        DisposeRetainedQueryLeasesAndReleaseSlots(retained, deleteDurableRecords: false);
 #else
         _disposed = true;
 #endif
@@ -1496,6 +1852,608 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             : nowUtc + _queryCursorLeaseRetention;
     }
 
+    internal string CreateIndexQueryCursor(
+        ActiveIndexQueryLease lease,
+        string queryFingerprint,
+        ReadOnlySpan<byte> continuationState,
+        Guid chainId,
+        DateTimeOffset expiresAtUtc)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
+        string innerCursor = lease.CreateCursor(queryFingerprint, continuationState);
+        return EncodeQueryCursor(new DurableQueryCursorEnvelope(
+            chainId,
+            lease.DatabaseGenerationRevision,
+            expiresAtUtc,
+            innerCursor));
+    }
+
+    internal void ReleaseClaimedIndexQueryCursor(Guid chainId, long claimedRecordVersion)
+    {
+        if (claimedRecordVersion <= 0)
+        {
+            return;
+        }
+
+        Exception? transitionFailure = null;
+        lock (_retainedQueryLeaseSync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            DurableQueryCursorRecord? expectedRecord = null;
+            try
+            {
+                string key = QueryCursorRecordKey(chainId);
+                KvEntry? entry = _control.GetEntry(key);
+                if (entry is null)
+                {
+                    return;
+                }
+
+                if (!TryDecodeQueryCursorRecord(
+                        entry.Value.Span,
+                        out DurableQueryCursorRecord? record)
+                    || record is null)
+                {
+                    throw new InvalidDataException("query_cursor_release_record_invalid");
+                }
+
+                expectedRecord = record;
+                if (entry.Version != claimedRecordVersion
+                    || record.State != DurableQueryCursorState.Claimed)
+                {
+                    throw new InvalidDataException("query_cursor_release_state_conflict");
+                }
+
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.BeforeReleaseCas);
+                KvCasResult terminal = _control.CompareAndSet(
+                    key,
+                    claimedRecordVersion,
+                    EncodeQueryCursorRecord(record));
+                if (!terminal.Succeeded)
+                {
+                    throw new InvalidDataException("query_cursor_release_cas_conflict");
+                }
+
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.AfterReleaseCas);
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.BeforeReleaseDelete);
+                if (!_control.Delete(key))
+                {
+                    throw new InvalidDataException("query_cursor_release_delete_conflict");
+                }
+
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.AfterReleaseDelete);
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.BeforeReleaseSnapshot);
+                _control.CreateSnapshot();
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.AfterReleaseSnapshot);
+            }
+            catch (Exception exception)
+            {
+                _queryCursorRegistryFaulted = true;
+                transitionFailure = exception;
+                if (expectedRecord is not null)
+                {
+                    _ = TryFailClosedObservedQueryCursorRecord(
+                        chainId,
+                        expectedRecord,
+                        allowCursorHashMismatch: false);
+                }
+            }
+        }
+
+        if (transitionFailure is not null)
+        {
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable,
+                transitionFailure);
+        }
+    }
+
+    private bool TryFailClosedQueryCursorRecord(
+        Guid chainId,
+        long expectedVersion,
+        DurableQueryCursorRecord record)
+    {
+        try
+        {
+            string key = QueryCursorRecordKey(chainId);
+            KvEntry? entry = _control.GetEntry(key);
+            if (entry is null)
+            {
+                return true;
+            }
+
+            if (entry.Version != expectedVersion)
+            {
+                return false;
+            }
+
+            DurableQueryCursorRecord claimed = record with
+            {
+                State = DurableQueryCursorState.Claimed,
+            };
+            KvCasResult terminal = _control.CompareAndSet(
+                key,
+                expectedVersion,
+                EncodeQueryCursorRecord(claimed));
+            if (!terminal.Succeeded || !_control.Delete(key))
+            {
+                return false;
+            }
+
+            _control.CreateSnapshot();
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryFailClosedObservedQueryCursorRecord(
+        Guid chainId,
+        DurableQueryCursorRecord expectedRecord,
+        bool allowCursorHashMismatch)
+    {
+        try
+        {
+            KvEntry? entry = _control.GetEntry(QueryCursorRecordKey(chainId));
+            if (entry is null)
+            {
+                return true;
+            }
+
+            if (!TryDecodeQueryCursorRecord(
+                    entry.Value.Span,
+                    out DurableQueryCursorRecord? observedRecord)
+                || observedRecord is null
+                || !string.Equals(
+                    observedRecord.WorkspaceId,
+                    expectedRecord.WorkspaceId,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    observedRecord.QueryFingerprint,
+                    expectedRecord.QueryFingerprint,
+                    StringComparison.Ordinal)
+                || observedRecord.GenerationRevision != expectedRecord.GenerationRevision
+                || observedRecord.ExpiresAtUtc != expectedRecord.ExpiresAtUtc
+                || (!allowCursorHashMismatch
+                    && !CryptographicOperations.FixedTimeEquals(
+                        observedRecord.CursorHash,
+                        expectedRecord.CursorHash)))
+            {
+                return false;
+            }
+
+            return TryFailClosedQueryCursorRecord(
+                chainId,
+                entry.Version,
+                observedRecord);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private byte[] LoadOrCreateQueryCursorSigningKey()
+    {
+        KvEntry? existing = _control.GetEntry(_queryCursorSigningKeyKey);
+        if (existing is not null)
+        {
+            if (existing.Value.Length != _queryCursorSigningKeyLength)
+            {
+                throw new InvalidDataException("query_cursor_signing_key_invalid");
+            }
+
+            return existing.Value.ToArray();
+        }
+
+        byte[] created = RandomNumberGenerator.GetBytes(_queryCursorSigningKeyLength);
+        KvCasResult result = _control.CompareAndSet(
+            _queryCursorSigningKeyKey,
+            expectedVersion: 0,
+            created);
+        if (result.Succeeded)
+        {
+            _control.CreateSnapshot();
+            return created;
+        }
+
+        existing = _control.GetEntry(_queryCursorSigningKeyKey);
+        if (existing is null || existing.Value.Length != _queryCursorSigningKeyLength)
+        {
+            throw new InvalidDataException("query_cursor_signing_key_invalid");
+        }
+
+        return existing.Value.ToArray();
+    }
+
+    private void RestoreRetainedQueryLeases()
+    {
+        IReadOnlyList<KvEntry> entries;
+        while (true)
+        {
+            entries = _control.ScanPrefix(
+                _queryCursorRecordPrefix,
+                _maximumRetainedQueryLeases + 1);
+            bool removedGarbage = false;
+            foreach (KvEntry entry in entries)
+            {
+                string key = Encoding.UTF8.GetString(entry.Key.Span);
+                bool keyValid = TryParseQueryCursorRecordKey(key, out _);
+                bool recordValid = TryDecodeQueryCursorRecord(
+                    entry.Value.Span,
+                    out DurableQueryCursorRecord? record);
+                bool remove = !keyValid
+                    || !recordValid
+                    || record is null
+                    || record.State != DurableQueryCursorState.Available
+                    || record.ExpiresAtUtc <= _timeProvider.GetUtcNow().ToUniversalTime();
+                if (!remove)
+                {
+                    try
+                    {
+                        using ActiveIndexQueryLease _ = AcquireIndexQueryRevision(
+                            record!.WorkspaceId,
+                            record.GenerationRevision);
+                        remove = record.ExpiresAtUtc
+                            <= _timeProvider.GetUtcNow().ToUniversalTime();
+                    }
+                    catch (DatabaseGenerationException exception)
+                        when (exception.Code == DatabaseGenerationErrorCodes.RevisionUnavailable)
+                    {
+                        remove = true;
+                    }
+                    catch (IndexQueryGenerationValidationException)
+                    {
+                        remove = true;
+                    }
+                }
+
+                if (remove)
+                {
+                    if (!_control.Delete(entry.Key.Span))
+                    {
+                        throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+                    }
+
+                    removedGarbage = true;
+                }
+            }
+
+            if (removedGarbage)
+            {
+                _control.CreateSnapshot();
+                continue;
+            }
+
+            if (entries.Count > _maximumRetainedQueryLeases)
+            {
+                throw new InvalidDataException("query_cursor_registry_capacity_exceeded");
+            }
+
+            break;
+        }
+
+        bool changed = false;
+        foreach (KvEntry entry in entries)
+        {
+            string key = Encoding.UTF8.GetString(entry.Key.Span);
+            if (!TryParseQueryCursorRecordKey(key, out Guid chainId)
+                || !TryDecodeQueryCursorRecord(entry.Value.Span, out DurableQueryCursorRecord? record)
+                || record is null
+                || record.State != DurableQueryCursorState.Available
+                || record.ExpiresAtUtc <= _timeProvider.GetUtcNow().ToUniversalTime())
+            {
+                if (!_control.Delete(entry.Key.Span))
+                {
+                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+                }
+
+                changed = true;
+                continue;
+            }
+
+            ActiveIndexQueryLease lease;
+            try
+            {
+                lease = AcquireIndexQueryRevision(record.WorkspaceId, record.GenerationRevision);
+            }
+            catch (DatabaseGenerationException exception)
+                when (exception.Code == DatabaseGenerationErrorCodes.RevisionUnavailable)
+            {
+                if (!_control.Delete(entry.Key.Span))
+                {
+                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+                }
+
+                changed = true;
+                continue;
+            }
+            catch (IndexQueryGenerationValidationException)
+            {
+                if (!_control.Delete(entry.Key.Span))
+                {
+                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+                }
+
+                changed = true;
+                continue;
+            }
+
+            if (record.ExpiresAtUtc <= _timeProvider.GetUtcNow().ToUniversalTime())
+            {
+                lease.Dispose();
+                if (!_control.Delete(entry.Key.Span))
+                {
+                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+                }
+
+                changed = true;
+                continue;
+            }
+
+            if (!_retainedQueryLeases.TryAdd(
+                chainId,
+                new RetainedIndexQueryCursor(
+                    chainId,
+                    record.WorkspaceId,
+                    record.QueryFingerprint,
+                    record.GenerationRevision,
+                    record.ExpiresAtUtc,
+                    record.CursorHash,
+                    entry.Version,
+                    record,
+                    lease)))
+            {
+                lease.Dispose();
+                throw new InvalidDataException("query_cursor_registry_duplicate_chain");
+            }
+
+            _queryLeaseSlotCount = checked(_queryLeaseSlotCount + 1);
+        }
+
+        if (changed)
+        {
+            _control.CreateSnapshot();
+        }
+
+        ScheduleRetainedQueryLeaseTimerUnsafe(
+            _timeProvider.GetUtcNow().ToUniversalTime());
+    }
+
+    private string EncodeQueryCursor(DurableQueryCursorEnvelope envelope)
+    {
+        using var payloadStream = new MemoryStream();
+        using (var writer = new BinaryWriter(payloadStream, _queryCursorUtf8, leaveOpen: true))
+        {
+            writer.Write(_queryCursorEnvelopeVersion);
+            writer.Write(envelope.ChainId.ToByteArray());
+            writer.Write(envelope.GenerationRevision);
+            writer.Write(envelope.ExpiresAtUtc.UtcTicks);
+            WriteCursorString(writer, envelope.InnerCursor);
+        }
+
+        byte[] payload = payloadStream.ToArray();
+        byte[] signatureInput = new byte[_queryCursorSignatureDomain.Length + payload.Length];
+        _queryCursorSignatureDomain.CopyTo(signatureInput, 0);
+        payload.CopyTo(signatureInput, _queryCursorSignatureDomain.Length);
+        byte[] signature = HMACSHA256.HashData(_queryCursorSigningKey, signatureInput);
+        byte[] signed = new byte[payload.Length + signature.Length];
+        payload.CopyTo(signed, 0);
+        signature.CopyTo(signed, payload.Length);
+        return Base64UrlEncode(signed);
+    }
+
+    private bool TryDecodeQueryCursor(
+        string cursor,
+        out DurableQueryCursorEnvelope? envelope)
+    {
+        envelope = null;
+        byte[] signed;
+        try
+        {
+            signed = Base64UrlDecode(cursor);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        if (signed.Length <= _queryCursorSignatureLength)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> payload = signed.AsSpan(0, signed.Length - _queryCursorSignatureLength);
+        ReadOnlySpan<byte> actualSignature = signed.AsSpan(payload.Length, _queryCursorSignatureLength);
+        byte[] signatureInput = new byte[_queryCursorSignatureDomain.Length + payload.Length];
+        _queryCursorSignatureDomain.CopyTo(signatureInput, 0);
+        payload.CopyTo(signatureInput.AsSpan(_queryCursorSignatureDomain.Length));
+        byte[] expectedSignature = HMACSHA256.HashData(_queryCursorSigningKey, signatureInput);
+        if (!CryptographicOperations.FixedTimeEquals(actualSignature, expectedSignature))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = new MemoryStream(payload.ToArray(), writable: false);
+            using var reader = new BinaryReader(stream, _queryCursorUtf8, leaveOpen: false);
+            if (reader.ReadInt32() != _queryCursorEnvelopeVersion)
+            {
+                return false;
+            }
+
+            byte[] chainBytes = reader.ReadBytes(16);
+            if (chainBytes.Length != 16)
+            {
+                return false;
+            }
+
+            var chainId = new Guid(chainBytes);
+            long revision = reader.ReadInt64();
+            long expiresAtTicks = reader.ReadInt64();
+            string innerCursor = ReadCursorString(reader);
+            if (revision <= 0 || stream.Position != stream.Length)
+            {
+                return false;
+            }
+
+            envelope = new DurableQueryCursorEnvelope(
+                chainId,
+                revision,
+                new DateTimeOffset(expiresAtTicks, TimeSpan.Zero),
+                innerCursor);
+            return true;
+        }
+        catch (Exception exception) when (exception is EndOfStreamException
+            or IOException
+            or DecoderFallbackException
+            or InvalidDataException
+            or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static byte[] EncodeQueryCursorRecord(DurableQueryCursorRecord record)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, _queryCursorUtf8, leaveOpen: true))
+        {
+            writer.Write(_queryCursorRecordVersion);
+            writer.Write((byte)record.State);
+            writer.Write(record.GenerationRevision);
+            writer.Write(record.ExpiresAtUtc.UtcTicks);
+            WriteCursorString(writer, record.WorkspaceId);
+            WriteCursorString(writer, record.QueryFingerprint);
+            writer.Write(record.CursorHash);
+        }
+
+        return stream.ToArray();
+    }
+
+    private static bool TryDecodeQueryCursorRecord(
+        ReadOnlySpan<byte> payload,
+        out DurableQueryCursorRecord? record)
+    {
+        record = null;
+        try
+        {
+            using var stream = new MemoryStream(payload.ToArray(), writable: false);
+            using var reader = new BinaryReader(stream, _queryCursorUtf8, leaveOpen: false);
+            if (reader.ReadInt32() != _queryCursorRecordVersion)
+            {
+                return false;
+            }
+
+            var state = (DurableQueryCursorState)reader.ReadByte();
+            long revision = reader.ReadInt64();
+            long expiresAtTicks = reader.ReadInt64();
+            string workspaceId = ReadCursorString(reader);
+            string queryFingerprint = ReadCursorString(reader);
+            byte[] cursorHash = reader.ReadBytes(_queryCursorHashLength);
+            if (!Enum.IsDefined(state)
+                || revision <= 0
+                || string.IsNullOrWhiteSpace(workspaceId)
+                || string.IsNullOrWhiteSpace(queryFingerprint)
+                || cursorHash.Length != _queryCursorHashLength
+                || stream.Position != stream.Length)
+            {
+                return false;
+            }
+
+            record = new DurableQueryCursorRecord(
+                state,
+                workspaceId,
+                queryFingerprint,
+                revision,
+                new DateTimeOffset(expiresAtTicks, TimeSpan.Zero),
+                cursorHash);
+            return true;
+        }
+        catch (Exception exception) when (exception is EndOfStreamException
+            or IOException
+            or DecoderFallbackException
+            or InvalidDataException
+            or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static void WriteCursorString(BinaryWriter writer, string value)
+    {
+        byte[] bytes = _queryCursorUtf8.GetBytes(value);
+        if (bytes.Length > 4096)
+        {
+            throw new InvalidDataException("query_cursor_text_length_invalid");
+        }
+
+        writer.Write(bytes.Length);
+        writer.Write(bytes);
+    }
+
+    private static string ReadCursorString(BinaryReader reader)
+    {
+        int length = reader.ReadInt32();
+        if (length < 0 || length > 4096 || length > reader.BaseStream.Length - reader.BaseStream.Position)
+        {
+            throw new InvalidDataException("query_cursor_text_length_invalid");
+        }
+
+        byte[] bytes = reader.ReadBytes(length);
+        if (bytes.Length != length)
+        {
+            throw new EndOfStreamException();
+        }
+
+        return _queryCursorUtf8.GetString(bytes);
+    }
+
+    private static string QueryCursorRecordKey(Guid chainId) =>
+        _queryCursorRecordPrefix + chainId.ToString("N");
+
+    private static bool TryParseQueryCursorRecordKey(string key, out Guid chainId)
+    {
+        chainId = default;
+        return key.StartsWith(_queryCursorRecordPrefix, StringComparison.Ordinal)
+            && Guid.TryParseExact(key[_queryCursorRecordPrefix.Length..], "N", out chainId);
+    }
+
+    private static string Base64UrlEncode(ReadOnlySpan<byte> bytes) =>
+        Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static byte[] Base64UrlDecode(string value)
+    {
+        string padded = value.Replace('-', '+').Replace('_', '/');
+        padded += (padded.Length % 4) switch
+        {
+            2 => "==",
+            3 => "=",
+            _ => string.Empty,
+        };
+        return Convert.FromBase64String(padded);
+    }
+
     private void ReleaseExpiredRetainedQueryLeases()
     {
         DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
@@ -1509,19 +2467,34 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
             expired = RemoveExpiredRetainedQueryLeasesUnsafe(
                 nowUtc,
-                requestedCursor: null,
+                requestedChainId: null,
                 out _);
             ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
         }
 
-        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
+        DisposeRetainedQueryLeasesAndReleaseSlots(expired, deleteDurableRecords: true);
     }
 
-    private bool TryReserveIndexQueryLeaseSlot()
+    private void RunRetainedQueryLeaseTimerCallback()
+    {
+        try
+        {
+            QueryCursorTransitionFaultTestHook?.Invoke(
+                IndexQueryCursorTransitionFaultPoint.BeforeExpirationTimerMaintenance);
+            ReleaseExpiredRetainedQueryLeases();
+        }
+        catch (Exception)
+        {
+            MarkQueryCursorRegistryFaulted();
+        }
+    }
+
+    internal bool TryReserveIndexQueryLeaseSlot()
     {
         lock (_retainedQueryLeaseSync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            ThrowIfQueryCursorRegistryUnavailableUnsafe();
             if (_queryLeaseSlotCount >= _maximumRetainedQueryLeases)
             {
                 return false;
@@ -1581,36 +2554,95 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
     private List<RetainedIndexQueryCursor> RemoveExpiredRetainedQueryLeasesUnsafe(
         DateTimeOffset nowUtc,
-        string? requestedCursor,
-        out bool requestedCursorExpired)
+        Guid? requestedChainId,
+        out bool requestedChainExpired)
     {
-        requestedCursorExpired = false;
+        requestedChainExpired = false;
         var expired = new List<RetainedIndexQueryCursor>();
-        foreach ((string cursor, RetainedIndexQueryCursor retained) in _retainedQueryLeases
+        foreach ((Guid chainId, RetainedIndexQueryCursor retained) in _retainedQueryLeases
             .Where(entry => entry.Value.ExpiresAtUtc <= nowUtc)
             .ToArray())
         {
-            _retainedQueryLeases.Remove(cursor);
+            _retainedQueryLeases.Remove(chainId);
             expired.Add(retained);
-            requestedCursorExpired |= string.Equals(cursor, requestedCursor, StringComparison.Ordinal);
+            requestedChainExpired |= chainId == requestedChainId;
         }
 
         return expired;
     }
 
     private void DisposeRetainedQueryLeasesAndReleaseSlots(
-        IEnumerable<RetainedIndexQueryCursor> retainedQueryLeases)
+        IEnumerable<RetainedIndexQueryCursor> retainedQueryLeases,
+        bool deleteDurableRecords)
     {
         foreach (RetainedIndexQueryCursor retained in retainedQueryLeases)
         {
             try
             {
+                if (deleteDurableRecords)
+                {
+                    _ = TryDeleteRetainedQueryCursorRecord(retained);
+                }
+
                 retained.Lease.Dispose();
             }
             finally
             {
                 ReleaseIndexQueryLeaseSlot();
             }
+        }
+    }
+
+    private bool TryDeleteRetainedQueryCursorRecord(RetainedIndexQueryCursor retained)
+    {
+        bool deleted;
+        try
+        {
+            deleted = TryFailClosedQueryCursorRecord(
+                retained.ChainId,
+                retained.RegistryVersion,
+                retained.Record);
+            if (deleted)
+            {
+                QueryCursorTransitionFaultTestHook?.Invoke(
+                    IndexQueryCursorTransitionFaultPoint.AfterExpirationDelete);
+            }
+        }
+        catch (Exception)
+        {
+            deleted = false;
+        }
+
+        if (!deleted)
+        {
+            MarkQueryCursorRegistryFaulted();
+        }
+
+        return deleted;
+    }
+
+    private void MarkQueryCursorRegistryFaulted()
+    {
+        lock (_retainedQueryLeaseSync)
+        {
+            _queryCursorRegistryFaulted = true;
+        }
+    }
+
+    private bool IsQueryCursorRegistryFaulted()
+    {
+        lock (_retainedQueryLeaseSync)
+        {
+            return _queryCursorRegistryFaulted;
+        }
+    }
+
+    private void ThrowIfQueryCursorRegistryUnavailableUnsafe()
+    {
+        if (_queryCursorRegistryFaulted)
+        {
+            throw new IndexQueryCursorLeaseException(
+                IndexQueryCursorLeaseFailure.RegistryUnavailable);
         }
     }
 
@@ -1689,7 +2721,10 @@ internal sealed class ActiveIndexQueryLease : IDisposable
 internal sealed class IndexQueryRequestLease : IDisposable
 {
     private readonly SonnetDbIndexGenerationStore _owner;
+    private readonly Guid _chainId;
+    private readonly string? _innerCursor;
     private ActiveIndexQueryLease? _lease;
+    private long _claimedRecordVersion;
     private int _ownsQueryLeaseSlot;
 
     internal IndexQueryRequestLease(
@@ -1697,10 +2732,16 @@ internal sealed class IndexQueryRequestLease : IDisposable
         ActiveIndexQueryLease lease,
         DateTimeOffset expiresAtUtc,
         bool cursorRecognized,
-        bool ownsQueryLeaseSlot)
+        bool ownsQueryLeaseSlot,
+        Guid chainId,
+        long claimedRecordVersion,
+        string? innerCursor)
     {
         _owner = owner;
         _lease = lease;
+        _chainId = chainId;
+        _claimedRecordVersion = claimedRecordVersion;
+        _innerCursor = innerCursor;
         ExpiresAtUtc = expiresAtUtc;
         CursorRecognized = cursorRecognized;
         _ownsQueryLeaseSlot = ownsQueryLeaseSlot ? 1 : 0;
@@ -1713,23 +2754,82 @@ internal sealed class IndexQueryRequestLease : IDisposable
 
     internal DateTimeOffset ExpiresAtUtc { get; }
 
+    internal byte[] ReadCursor(string cursor, string queryFingerprint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cursor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
+        if (!CursorRecognized || _innerCursor is null)
+        {
+            throw new InvalidOperationException("No continuation cursor was acquired.");
+        }
+
+        return Lease.ReadCursor(_innerCursor, queryFingerprint);
+    }
+
+    internal string CreateCursor(string queryFingerprint, ReadOnlySpan<byte> continuationState) =>
+        _owner.CreateIndexQueryCursor(
+            Lease,
+            queryFingerprint,
+            continuationState,
+            _chainId,
+            ExpiresAtUtc);
+
     internal IndexQueryCursorRetentionResult TryRetain(
         string cursor,
         string queryFingerprint)
     {
         ActiveIndexQueryLease lease = Lease;
-        IndexQueryCursorRetentionResult result = _owner.RetainIndexQueryCursor(
-            cursor,
-            queryFingerprint,
-            lease,
-            ExpiresAtUtc);
-        if (result == IndexQueryCursorRetentionResult.Retained)
+        bool reservedQueryLeaseSlot = false;
+        if (Volatile.Read(ref _ownsQueryLeaseSlot) == 0)
         {
-            _lease = null;
-            _ = Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0);
+            if (!_owner.TryReserveIndexQueryLeaseSlot())
+            {
+                return IndexQueryCursorRetentionResult.CapacityExceeded;
+            }
+
+            if (Interlocked.CompareExchange(ref _ownsQueryLeaseSlot, 1, 0) == 0)
+            {
+                reservedQueryLeaseSlot = true;
+            }
+            else
+            {
+                _owner.ReleaseIndexQueryLeaseSlot();
+            }
         }
 
-        return result;
+        try
+        {
+            IndexQueryCursorRetentionResult result = _owner.RetainIndexQueryCursor(
+                cursor,
+                queryFingerprint,
+                lease,
+                ExpiresAtUtc,
+                _chainId,
+                _claimedRecordVersion);
+            if (result == IndexQueryCursorRetentionResult.Retained)
+            {
+                _lease = null;
+                _claimedRecordVersion = 0;
+                _ = Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0);
+            }
+            else if (reservedQueryLeaseSlot
+                && Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0) != 0)
+            {
+                _owner.ReleaseIndexQueryLeaseSlot();
+            }
+
+            return result;
+        }
+        catch
+        {
+            if (reservedQueryLeaseSlot
+                && Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0) != 0)
+            {
+                _owner.ReleaseIndexQueryLeaseSlot();
+            }
+
+            throw;
+        }
     }
 
     public void Dispose()
@@ -1737,7 +2837,15 @@ internal sealed class IndexQueryRequestLease : IDisposable
         ActiveIndexQueryLease? lease = Interlocked.Exchange(ref _lease, null);
         try
         {
-            lease?.Dispose();
+            long claimedRecordVersion = Interlocked.Exchange(ref _claimedRecordVersion, 0);
+            try
+            {
+                _owner.ReleaseClaimedIndexQueryCursor(_chainId, claimedRecordVersion);
+            }
+            finally
+            {
+                lease?.Dispose();
+            }
         }
         finally
         {
@@ -1750,23 +2858,51 @@ internal sealed class IndexQueryRequestLease : IDisposable
 }
 
 internal sealed record RetainedIndexQueryCursor(
+    Guid ChainId,
     string WorkspaceId,
     string QueryFingerprint,
+    long GenerationRevision,
     DateTimeOffset ExpiresAtUtc,
+    byte[] CursorHash,
+    long RegistryVersion,
+    DurableQueryCursorRecord Record,
     ActiveIndexQueryLease Lease);
+
+internal sealed record DurableQueryCursorEnvelope(
+    Guid ChainId,
+    long GenerationRevision,
+    DateTimeOffset ExpiresAtUtc,
+    string InnerCursor);
+
+internal sealed record DurableQueryCursorRecord(
+    DurableQueryCursorState State,
+    string WorkspaceId,
+    string QueryFingerprint,
+    long GenerationRevision,
+    DateTimeOffset ExpiresAtUtc,
+    byte[] CursorHash);
+
+internal enum DurableQueryCursorState : byte
+{
+    Available = 1,
+    Claimed = 2,
+}
 
 internal enum IndexQueryCursorRetentionResult
 {
     Retained,
     Expired,
     CapacityExceeded,
+    Conflict,
 }
 
 internal enum IndexQueryCursorLeaseFailure
 {
     Expired,
     Mismatch,
+    Stale,
     CapacityExceeded,
+    RegistryUnavailable,
 }
 
 internal sealed class IndexQueryCursorLeaseException : InvalidOperationException
@@ -1777,7 +2913,28 @@ internal sealed class IndexQueryCursorLeaseException : InvalidOperationException
         Failure = failure;
     }
 
+    internal IndexQueryCursorLeaseException(
+        IndexQueryCursorLeaseFailure failure,
+        Exception innerException)
+        : base("The retained index query cursor lease is unavailable.", innerException)
+    {
+        Failure = failure;
+    }
+
     internal IndexQueryCursorLeaseFailure Failure { get; }
+}
+
+internal sealed class IndexQueryGenerationValidationException : Exception
+{
+    internal IndexQueryGenerationValidationException(string message)
+        : base(message)
+    {
+    }
+
+    internal IndexQueryGenerationValidationException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }
 
 internal sealed record ActiveIndexSearchHit(
@@ -1858,6 +3015,22 @@ internal enum IndexGenerationPublishFaultPoint
 {
     BeforeCommit,
     AfterCommit,
+}
+
+internal enum IndexQueryCursorTransitionFaultPoint
+{
+    BeforeClaimCas,
+    AfterClaimCas,
+    BeforeRetainCas,
+    AfterRetainCas,
+    BeforeReleaseCas,
+    AfterReleaseCas,
+    BeforeReleaseDelete,
+    AfterReleaseDelete,
+    BeforeReleaseSnapshot,
+    AfterReleaseSnapshot,
+    AfterExpirationDelete,
+    BeforeExpirationTimerMaintenance,
 }
 
 internal sealed record CleanupOutcome(
