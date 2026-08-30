@@ -31,6 +31,7 @@
 - 增加显式 `UseSonnetDbSource=true` 联调 lane，以最新 SonnetDB `Tsdb.Generations` 原子发布 planning KV、Document 与 FullText 资源，并覆盖 active lease、generation-bound cursor、重开和 lease-aware cleanup（CPL-013/CPL-015）。
 - 增加 source lane publish 提交边界的 internal、默认无行为故障点与重开回归：提交前故障保持完整旧 generation 并可重试，提交后故障保持完整新 generation、exact/FullText 新 revision 可见且重试复用 active revision（CPL-015）；真实子进程 kill 仍是门禁缺口。
 - source lane MCP 在显式 `--database` 下接通 `workspace_status`：每个请求持有单一 active generation lease，从同一 planning/manifest snapshot 返回 typed、source-generated 响应；覆盖空库、无 Document 全扫、重开、新 active revision、旧 selector fail closed、损坏 manifest、deadline 序列化边界和完整 stdio 宿主生命周期。`code_search`、`symbol_get` 与 C2/C3 工具仍 unavailable，CG-005 保持开放。
+- source lane MCP 接通 `code_search` exact/fulltext 首切片：每个请求持有 active generation lease，exact 使用 `by_stable_id` Document path index，fulltext 使用 generation-bound `code_search` FullText index，并返回 typed、source-generated 响应及实际 access path/候选计数/预算诊断。source capability 升为 Preview；默认 package lane 保持 `generation_publish_blocked`，`symbol_get`、查询 cursor、fulltext filter plan、真实进程恢复和容量门禁仍未完成，CG-005 保持 verifying。
 - source lane 接入 SonnetDB cutoff-aware retired cleanup，CLI `--retired-generation-retention` 真实控制到期资格；新增 zero/due/mixed-age reopen/lease/cancellation/failure/最大时长/连续发布回归并关闭 CG-007 的 API/接线缺口。
 - 新增 `couplet.index_stage.v2` source-lane stage report 与独立 schema，分别报告 lease-deferred 和 retention-deferred revisions；封闭的 v1 schema 与固定 package v1 JSON 保持不变。
 
@@ -40,9 +41,9 @@
 - 最新 SonnetDB source lane 启用已修复的 Native AOT background worker 生命周期；只有默认 3.1.0 package 的 AOT 路径继续禁用 worker 并报告 CG-006。普通 source/JIT handshake 不再把选择源码依赖外推为 AOT 已验证；2026-08-29 source AOT CLI 已完成 0 IL/AOT warning 的首次 publish 与 unchanged no-op smoke，本轮 CG-007 retention 变更尚未重新执行 Native AOT publish，7 天长稳仍待归档。source runtime 的 retention cutoff 已接线；默认零值保持原立即清理行为。
 - 将 lexical partial adapter 的声明置信度从需要语言语义证明的 `Exact/1.0` 更正为带稳定词法规则证据的 `Inferred/0.9`，同时把 adapter producer version 从 `1.0.0` 升至 `1.1.0`、规则升至 `declaration.v2`，保证新 snapshot 的 revision/provenance 反映生产者变化。`IncrementalIndexPlanner` 已覆盖 `1.0.0 -> 1.1.0` 的 `producer_version_changed` 合同；当前 `index-stage` runtime 尚不读取旧 snapshot/manifest，不能据此宣称真实运行路径会按版本差异触发增量重建。
 - 默认依赖从临时 SonnetDB 源码引用切换为官方 `SonnetDB.Core 3.1.0` 固定 package 和 content hash；Couplet 可独立 checkout 构建，但产品发布仍受 C1-C4 功能门禁约束。
-- 默认 package lane 的 C1 能力门控从“未实现”细化为“staging 已实现、generation 发布受阻”；exact/fulltext MCP 继续返回稳定 `capability_unavailable`，原因码为 `generation_publish_blocked`。source lane 在 active query 工具接线前使用 `active_query_tool_not_connected`。
+- 默认 package lane 的 C1 能力门控从“未实现”细化为“staging 已实现、generation 发布受阻”；exact/fulltext MCP 继续返回稳定 `capability_unavailable`，原因码为 `generation_publish_blocked`。source lane exact/fulltext 已升为 Preview，尚未接线的 symbol/cursor 继续使用稳定 capability limitation。
 - Native AOT 的 `index-stage` 通过固定包公开 options 关闭不兼容的 background flush/compaction/retention/KV maintenance worker，并在 staging/handshake 中显式报告 CG-006；JIT 路径继续启用默认后台维护。
-- `workspace_status` 不扫描 Document 行、不重算 generation checksum、不触发 rebuild；它只校验 active lease 资源角色、确定性资源名、schema、manifest checksum 形状和 planning identity。`source_revision` 与 `database_bytes` 是 MCP 启动快照，diagnostics 显式报告该 freshness 边界；exact/fulltext 初始化能力在查询工具接线前继续声明 unavailable。
+- `workspace_status` 不扫描 Document 行、不重算 generation checksum、不触发 rebuild；它只校验 active lease 资源角色、确定性资源名、schema、manifest checksum 形状和 planning identity。`source_revision` 与 `database_bytes` 是 MCP 启动快照，diagnostics 显式报告该 freshness 边界；source lane exact/fulltext 初始化能力在 active query 首切片接线后声明 Preview，固定 package lane 继续 unavailable。
 
 ### Fixed
 

@@ -49,13 +49,15 @@ MCP Server 启动时必须用 `--workspace <path-or-id>` 或等价显式配置�
 
 不得触发隐式全量重建或 Document 全表扫描。客户端可据此决定等待、提示用户或只使用已验证能力。
 
-当前 source lane 在 MCP 启动时显式绑定 `--workspace` 与 `--database` 后开放该工具：每次调用持有一个 active generation lease，只读取同一 planning/manifest snapshot，并以 source-generated typed DTO 返回。`source_revision` 与 `database_bytes` 是 initialize/startup 时的采样值，不是调用时实时工作树扫描；`freshness.reason` 与 diagnostics 必须显式说明该边界，`rebuild_required` 只相对 initialize snapshot 判断。`code_search`/`symbol_get` 未接线前 exact/fulltext capability 仍为 unavailable；成功 status 继续报告尚未关闭的 CG-005，不再报告已关闭的 CG-007。
+当前 source lane 在 MCP 启动时显式绑定 `--workspace` 与 `--database` 后开放该工具：每次调用持有一个 active generation lease，只读取同一 planning/manifest snapshot，并以 source-generated typed DTO 返回。`source_revision` 与 `database_bytes` 是 initialize/startup 时的采样值，不是调用时实时工作树扫描；`freshness.reason` 与 diagnostics 必须显式说明该边界，`rebuild_required` 只相对 initialize snapshot 判断。source lane 的 exact/fulltext capability 已随 `code_search` 首切片升为 Preview；`symbol_get` 仍 unavailable。成功 status 继续报告尚未关闭的 CG-005，不再报告已关闭的 CG-007。
 
 ### `code_search`
 
 输入 query、scope（path/language/kind）、mode（`exact`、`fulltext`、`vector`、`hybrid`）和预算。输出稳定排序的 file/symbol/chunk 命中、score decomposition 和 source evidence。
 
 - C1 开放 exact/fulltext；C3 才开放 vector/hybrid。
+- 当前 source lane exact 只按 stable ID 命中 `by_stable_id` path index，fulltext 使用 active generation 的 `code_search` FullText index；请求全程持有同一 query lease，并返回实际 access path、候选/检查/返回计数和预算消耗。
+- 当前不签发 `next_cursor`；携带 cursor 或 fulltext path/language/kind filter 时稳定返回 capability limitation。默认 package lane 继续返回 `generation_publish_blocked`。
 - 请求未就绪 mode 时返回 `capability_unavailable`，不把 fulltext 冒充 vector/hybrid。
 - 相同 score 使用 stable ID 作为最终 tie-breaker，保证分页确定性。
 
