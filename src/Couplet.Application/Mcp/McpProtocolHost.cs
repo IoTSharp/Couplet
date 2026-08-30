@@ -243,6 +243,15 @@ public sealed class McpProtocolHost
                 serializedWorkspaceStatus);
         }
 
+        if (result.CodeSearch is { } codeSearch
+            && result.SerializedCodeSearch is { } serializedCodeSearch)
+        {
+            return WriteToolSuccess(
+                id,
+                codeSearch,
+                serializedCodeSearch);
+        }
+
         return WriteToolError(id, new McpError
         {
             Code = McpErrorCodes.InternalError,

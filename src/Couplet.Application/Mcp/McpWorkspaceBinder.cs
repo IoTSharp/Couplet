@@ -48,11 +48,11 @@ public static class McpWorkspaceBinder
     /// <summary>
     /// 获取 source lane C1 active generation 查询连接公开的诚实 capability 列表。
     /// </summary>
-    /// <returns>workspace status 可见但查询工具仍未接线的能力状态。</returns>
+    /// <returns>workspace status 与 C1 exact/fulltext 查询可见的能力状态。</returns>
     public static IReadOnlyList<McpCapability> CreateC1Capabilities() =>
     [
-        Capability("exact", "unavailable", "active_query_tool_not_connected"),
-        Capability("fulltext", "unavailable", "active_query_tool_not_connected"),
+        Capability("exact", "preview", "active_generation_query_connected"),
+        Capability("fulltext", "preview", "active_generation_query_connected"),
         Capability("vector", "unavailable", "c3_not_implemented"),
         Capability("graph", "unavailable", "c2_release_gate_not_passed"),
         Capability("hybrid", "unavailable", "c3_not_implemented"),

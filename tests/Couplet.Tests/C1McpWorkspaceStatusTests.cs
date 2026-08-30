@@ -8,6 +8,7 @@ using Couplet.Application.Serialization;
 using Couplet.Application.Workspaces;
 using Couplet.Core.Capabilities;
 using Couplet.Core.Indexing;
+using Couplet.Core.Languages;
 using Couplet.Core.Mcp;
 using Couplet.Infrastructure.SonnetDb;
 using SonnetDB.Engine;
@@ -19,7 +20,7 @@ namespace Couplet.Tests;
 public sealed class C1McpWorkspaceStatusTests
 {
     [Fact]
-    public void WorkspaceStatus_EmptyDatabase_ReturnsIndexNotReadyWhileQueriesStayUnavailable()
+    public void WorkspaceStatus_EmptyDatabase_ReturnsIndexNotReadyForActiveQueries()
     {
         string database = TemporaryDirectory();
         try
@@ -46,9 +47,8 @@ public sealed class C1McpWorkspaceStatusTests
                 CancellationToken.None,
                 McpWorkspaceBinder.CreateC1Capabilities());
             McpError searchError = Assert.IsType<McpError>(search.Error);
-            Assert.Equal(McpErrorCodes.CapabilityUnavailable, searchError.Code);
-            Assert.Equal("active_query_tool_not_connected", searchError.Reason);
-            Assert.Equal("CG-005", searchError.GapId);
+            Assert.Equal(McpErrorCodes.IndexNotReady, searchError.Code);
+            Assert.Equal("active_generation_not_published", searchError.Reason);
         }
         finally
         {
@@ -96,7 +96,7 @@ public sealed class C1McpWorkspaceStatusTests
                 FullScanCount(collection));
             Assert.All(
                 response.Capabilities.Where(capability => capability.Id is "exact" or "fulltext"),
-                capability => Assert.Equal("unavailable", capability.Level));
+                capability => Assert.Equal("preview", capability.Level));
 
             var host = new McpProtocolHost(
                 binding,
@@ -115,6 +115,63 @@ public sealed class C1McpWorkspaceStatusTests
             Assert.Equal(
                 Encoding.UTF8.GetByteCount(contentJson),
                 structured.GetProperty("diagnostics").GetProperty("consumed_bytes").GetInt32());
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_ExactStableId_UsesActiveGenerationPathIndexWithoutDocumentScan()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishFirstAsync(workspaceRoot, database);
+            IndexedSymbol symbol = Assert.Single(
+                published.Snapshot.Files.Single().Symbols,
+                candidate => candidate.DisplayName == "Original");
+            using var store = new SonnetDbIndexGenerationStore(database);
+            DocumentCollectionStore collection = store.GetActiveDocumentCollectionForTest(
+                published.Snapshot.WorkspaceId);
+            long fullScansBefore = FullScanCount(collection);
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            using JsonDocument arguments = JsonDocument.Parse(
+                "{\"protocol_version\":\"1\",\"budget\":{\"max_items\":20,\"max_tokens\":1000,\"max_bytes\":65536,\"deadline_ms\":10000},\"query\":\""
+                + symbol.Id
+                + "\",\"mode\":\"exact\"}");
+
+            McpDispatchResult result = McpToolContractDispatcher.Dispatch(
+                McpToolNames.CodeSearch,
+                arguments.RootElement,
+                Binding(published.Snapshot),
+                "search-exact",
+                executor,
+                CancellationToken.None,
+                McpWorkspaceBinder.CreateC1Capabilities());
+
+            Assert.Null(result.Error);
+            McpToolResponse<CodeSearchItem> response = Assert.IsType<McpToolResponse<CodeSearchItem>>(
+                result.CodeSearch);
+            CodeSearchItem item = Assert.Single(response.Items);
+            Evidence evidence = Assert.Single(response.Evidence);
+            Assert.Equal(symbol.Id, item.Id);
+            Assert.Equal("member", item.Kind);
+            Assert.Equal([evidence.Id], item.EvidenceIds);
+            Assert.Equal(symbol.Definition.Path, evidence.Span!.Path);
+            Assert.Equal(published.Snapshot.IndexRevision, evidence.IndexRevision);
+            Assert.Equal(
+                "generation_active_lease:document_path_index:by_stable_id",
+                response.Diagnostics.AccessPath);
+            Assert.Equal(1, response.Diagnostics.Candidates);
+            Assert.Equal(1, response.Diagnostics.Examined);
+            Assert.Equal(1, response.Diagnostics.Returned);
+            Assert.False(response.Truncated);
+            Assert.Null(response.NextCursor);
+            Assert.Equal(fullScansBefore, FullScanCount(collection));
         }
         finally
         {
@@ -340,9 +397,9 @@ public sealed class C1McpWorkspaceStatusTests
                         .Where(capability => capability.GetProperty("id").GetString() is "exact" or "fulltext"),
                     capability =>
                     {
-                        Assert.Equal("unavailable", capability.GetProperty("level").GetString());
+                        Assert.Equal("preview", capability.GetProperty("level").GetString());
                         Assert.Equal(
-                            "active_query_tool_not_connected",
+                            "active_generation_query_connected",
                             capability.GetProperty("reason").GetString());
                     });
             }
@@ -356,16 +413,25 @@ public sealed class C1McpWorkspaceStatusTests
                     result.GetProperty("structuredContent").GetProperty("index_revision").GetString());
             }
 
-            foreach (string response in responses[2..])
+            using (JsonDocument searchResponse = JsonDocument.Parse(responses[2]))
             {
-                using JsonDocument toolResponse = JsonDocument.Parse(response);
-                JsonElement result = toolResponse.RootElement.GetProperty("result");
+                JsonElement result = searchResponse.RootElement.GetProperty("result");
+                Assert.False(result.GetProperty("isError").GetBoolean());
+                Assert.Equal(
+                    "generation_active_lease:document_fulltext:code_search",
+                    result.GetProperty("structuredContent")
+                        .GetProperty("diagnostics")
+                        .GetProperty("access_path")
+                        .GetString());
+            }
+
+            using (JsonDocument symbolResponse = JsonDocument.Parse(responses[3]))
+            {
+                JsonElement result = symbolResponse.RootElement.GetProperty("result");
                 Assert.True(result.GetProperty("isError").GetBoolean());
                 JsonElement toolError = result.GetProperty("structuredContent").GetProperty("error");
                 Assert.Equal(McpErrorCodes.CapabilityUnavailable, toolError.GetProperty("code").GetString());
-                Assert.Equal(
-                    "active_query_tool_not_connected",
-                    toolError.GetProperty("reason").GetString());
+                Assert.Equal("active_query_tool_not_connected", toolError.GetProperty("reason").GetString());
                 Assert.Equal("CG-005", toolError.GetProperty("gap_id").GetString());
             }
 

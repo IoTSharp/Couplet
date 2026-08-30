@@ -467,13 +467,87 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 throw new InvalidDataException("active_generation_document_schema_invalid");
             }
 
-            return new ActiveIndexQueryLease(lease, planning, manifest);
+            return new ActiveIndexQueryLease(
+                lease,
+                planning,
+                manifest,
+                documentsResource.Name,
+                fullTextResource.Name);
         }
         catch
         {
             lease.Dispose();
             throw;
         }
+    }
+
+    internal ActiveIndexSearchResult QueryActiveCodeSearch(
+        ActiveIndexQueryLease lease,
+        string mode,
+        string query,
+        int topK,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(lease);
+        ArgumentException.ThrowIfNullOrWhiteSpace(mode);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(topK);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        DocumentCollectionSchema schema = _database.Documents.Catalog.TryGet(lease.DocumentCollectionName)
+            ?? throw new InvalidDataException("active_generation_document_collection_missing");
+        DocumentCollectionStore collection = _database.Documents.Open(lease.DocumentCollectionName);
+        if (string.Equals(mode, "exact", StringComparison.Ordinal))
+        {
+            DocumentPathIndex index = schema.TryGetIndex("by_stable_id")
+                ?? throw new InvalidDataException("active_generation_exact_index_missing");
+            IReadOnlyList<DocumentRow> rows = collection.GetByIndex(index, query, Math.Min(topK, 2));
+            cancellationToken.ThrowIfCancellationRequested();
+            ActiveIndexSearchHit[] hits = rows
+                .Select(row => new ActiveIndexSearchHit(
+                    CoupletJsonSerializer.DeserializeIndexStorageDocument(row.Json),
+                    1))
+                .ToArray();
+            return new ActiveIndexSearchResult(
+                "document_path_index:by_stable_id",
+                rows.Count,
+                rows.Count,
+                hits);
+        }
+
+        if (!string.Equals(mode, "fulltext", StringComparison.Ordinal))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported C1 query mode.");
+        }
+
+        DocumentFullTextIndex fullTextIndex = schema.TryGetFullTextIndex(lease.FullTextIndexName)
+            ?? throw new InvalidDataException("active_generation_fulltext_index_missing");
+        IReadOnlyList<DocumentFullTextSearchHit> fullTextHits = collection.SearchFullText(
+            fullTextIndex,
+            "$.search_text",
+            query,
+            topK);
+        var hydrated = new List<ActiveIndexSearchHit>(fullTextHits.Count);
+        foreach (DocumentFullTextSearchHit hit in fullTextHits)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DocumentRow? row = collection.Get(hit.DocumentId);
+            if (row is null)
+            {
+                throw new InvalidDataException("active_generation_fulltext_document_missing");
+            }
+
+            hydrated.Add(new ActiveIndexSearchHit(
+                CoupletJsonSerializer.DeserializeIndexStorageDocument(row.Json),
+                hit.Score));
+        }
+
+        return new ActiveIndexSearchResult(
+            "document_fulltext:code_search",
+            fullTextHits.Count,
+            hydrated.Count,
+            hydrated);
     }
 
     internal DocumentCollectionStore GetActiveDocumentCollectionForTest(string workspaceId)
@@ -922,11 +996,15 @@ internal sealed class ActiveIndexQueryLease : IDisposable
     internal ActiveIndexQueryLease(
         DatabaseGenerationQueryLease lease,
         IndexPlanningSnapshot planningSnapshot,
-        GenerationManifest manifest)
+        GenerationManifest manifest,
+        string documentCollectionName,
+        string fullTextIndexName)
     {
         _lease = lease;
         PlanningSnapshot = planningSnapshot;
         Manifest = manifest;
+        DocumentCollectionName = documentCollectionName;
+        FullTextIndexName = fullTextIndexName;
     }
 
     internal long DatabaseGenerationRevision => _lease.Generation.Revision;
@@ -935,8 +1013,22 @@ internal sealed class ActiveIndexQueryLease : IDisposable
 
     internal GenerationManifest Manifest { get; }
 
+    internal string DocumentCollectionName { get; }
+
+    internal string FullTextIndexName { get; }
+
     public void Dispose() => _lease.Dispose();
 }
+
+internal sealed record ActiveIndexSearchHit(
+    IndexStorageDocument Document,
+    double Score);
+
+internal sealed record ActiveIndexSearchResult(
+    string AccessPath,
+    long Candidates,
+    long Examined,
+    IReadOnlyList<ActiveIndexSearchHit> Hits);
 
 internal enum IndexGenerationPublishFaultPoint
 {

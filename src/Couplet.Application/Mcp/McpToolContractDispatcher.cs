@@ -19,6 +19,12 @@ public sealed class McpDispatchResult
     /// <summary>获取在 active generation lease 内冻结的 workspace status JSON；其他结果或失败时为空。</summary>
     public string? SerializedWorkspaceStatus { get; init; }
 
+    /// <summary>获取 code search 成功响应；其他结果或失败时为空。</summary>
+    public McpToolResponse<CodeSearchItem>? CodeSearch { get; init; }
+
+    /// <summary>获取在 active generation lease 内冻结的 code search JSON；其他结果或失败时为空。</summary>
+    public string? SerializedCodeSearch { get; init; }
+
     /// <summary>
     /// 创建稳定错误结果。
     /// </summary>
@@ -47,6 +53,26 @@ public sealed class McpDispatchResult
             Error = null,
             WorkspaceStatus = response,
             SerializedWorkspaceStatus = serializedResponse,
+        };
+    }
+
+    /// <summary>
+    /// 创建 code search typed 成功结果。
+    /// </summary>
+    /// <param name="response">typed 成功响应。</param>
+    /// <param name="serializedResponse">在 active generation lease 内完成的 source-generated JSON。</param>
+    /// <returns>成功结果。</returns>
+    public static McpDispatchResult FromCodeSearch(
+        McpToolResponse<CodeSearchItem> response,
+        string serializedResponse)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serializedResponse);
+        return new McpDispatchResult
+        {
+            Error = null,
+            CodeSearch = response,
+            SerializedCodeSearch = serializedResponse,
         };
     }
 }
@@ -136,7 +162,10 @@ public static class McpToolContractDispatcher
                 correlationId));
         }
 
-        bool deferRevisionAvailability = executor is not null && request is WorkspaceStatusRequest;
+        bool canExecute = executor is not null
+            && (request is WorkspaceStatusRequest
+                || request is CodeSearchRequest { Mode: "exact" or "fulltext" });
+        bool deferRevisionAvailability = canExecute;
         McpError? commonError = McpRequestValidator.Validate(
             request,
             binding,
@@ -170,9 +199,9 @@ public static class McpToolContractDispatcher
                 "embedding.provider"));
         }
 
-        if (executor is not null && request is WorkspaceStatusRequest)
+        if (canExecute)
         {
-            return executor.Execute(request, binding, correlationId, cancellationToken);
+            return executor!.Execute(request, binding, correlationId, cancellationToken);
         }
 
         (string capability, string reason, string gap) = ToolGate(
@@ -265,6 +294,11 @@ public static class McpToolContractDispatcher
         if (capabilities is null)
         {
             return gate;
+        }
+
+        if (request is SymbolGetRequest)
+        {
+            return ("workspace.index", "active_query_tool_not_connected", "CG-005");
         }
 
         (string Id, string Capability, string Gap)? declaredGate = request switch
