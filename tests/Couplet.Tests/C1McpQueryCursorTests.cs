@@ -46,6 +46,7 @@ public sealed class C1McpQueryCursorTests
             string? cursor = null;
             do
             {
+                bool retainedCursorLease = cursor is not null;
                 McpToolResponse<CodeSearchItem> page = Success(DispatchSearch(
                     executor,
                     binding,
@@ -54,7 +55,9 @@ public sealed class C1McpQueryCursorTests
                     cursor));
                 Assert.Equal(published.Snapshot.IndexRevision, page.IndexRevision);
                 Assert.Equal(
-                    "generation_active_lease:document_fulltext:code_search",
+                    (retainedCursorLease
+                        ? "generation_retained_cursor_lease:"
+                        : "generation_active_lease:") + "document_fulltext:code_search",
                     page.Diagnostics.AccessPath);
                 Assert.InRange(page.Items.Count, 1, 2);
                 actualIds.AddRange(page.Items.Select(item => item.Id));
@@ -122,6 +125,13 @@ public sealed class C1McpQueryCursorTests
             Assert.Equal(McpErrorCodes.InvalidRequest, shapeError.Code);
             Assert.Equal("query_cursor_invalid", shapeError.Reason);
             Assert.Equal(published.Snapshot.IndexRevision, shapeError.CurrentRevision);
+            McpToolResponse<CodeSearchItem> validContinuation = Success(DispatchSearch(
+                executor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor));
+            Assert.NotEmpty(validContinuation.Items);
             Assert.Equal(fullScansBefore, FullScanCount(collection));
         }
         finally
@@ -132,7 +142,7 @@ public sealed class C1McpQueryCursorTests
     }
 
     [Fact]
-    public async Task CodeSearch_PublishDuringFirstPage_KeepsRequestLeaseThenRejectsRetiredCursorAsStale()
+    public async Task CodeSearch_PublishDuringFirstPage_RetainsRetiredLeaseAcrossRequestsThenReleasesAfterLastPage()
     {
         string workspaceRoot = TemporaryDirectory();
         string database = TemporaryDirectory();
@@ -158,18 +168,22 @@ public sealed class C1McpQueryCursorTests
             DocumentCollectionStore oldCollection = store.GetActiveDocumentCollectionForTest(
                 first.Snapshot.WorkspaceId);
             long oldFullScansBefore = FullScanCount(oldCollection);
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            McpToolResponse<CodeSearchItem> complete = Success(DispatchSearch(
+                executor,
+                Binding(first.Snapshot),
+                "SharedToken",
+                maxItems: 100));
+            string[] expectedIds = complete.Items.Select(item => item.Id).ToArray();
             IndexStageReport? secondReport = null;
             DatabaseGenerationCleanupResult? cleanupWhileLeased = null;
-            var executor = new SonnetDbMcpToolExecutor(store, 0)
+            executor.BeforeResponseSerializationTestHook = () =>
             {
-                BeforeResponseSerializationTestHook = () =>
-                {
-                    secondReport = store.StageAndPublish(
-                        secondSnapshot,
-                        secondPlan,
-                        first.Report.DatabaseGenerationRevision!.Value);
-                    cleanupWhileLeased = store.CleanupRetired(first.Snapshot.WorkspaceId);
-                },
+                secondReport = store.StageAndPublish(
+                    secondSnapshot,
+                    secondPlan,
+                    first.Report.DatabaseGenerationRevision!.Value);
+                cleanupWhileLeased = store.CleanupRetired(first.Snapshot.WorkspaceId);
             };
 
             McpToolResponse<CodeSearchItem> firstPage = Success(DispatchSearch(
@@ -185,21 +199,36 @@ public sealed class C1McpQueryCursorTests
                 [1L],
                 Assert.IsType<DatabaseGenerationCleanupResult>(cleanupWhileLeased).DeferredRevisions);
             Assert.Equal(oldFullScansBefore, FullScanCount(oldCollection));
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
 
             executor.BeforeResponseSerializationTestHook = null;
-            DocumentCollectionStore activeCollection = store.GetActiveDocumentCollectionForTest(
+            DatabaseGenerationCleanupResult cleanupAfterFirstResponse = store.CleanupRetired(
                 first.Snapshot.WorkspaceId);
-            long activeFullScansBefore = FullScanCount(activeCollection);
-            McpError stale = Assert.IsType<McpError>(DispatchSearch(
-                executor,
-                Binding(secondSnapshot),
-                "SharedToken",
-                maxItems: 1,
-                retiredCursor).Error);
-            Assert.Equal(McpErrorCodes.StaleRevision, stale.Code);
-            Assert.Equal("query_cursor_stale", stale.Reason);
-            Assert.Equal(secondSnapshot.IndexRevision, stale.CurrentRevision);
-            Assert.Equal(activeFullScansBefore, FullScanCount(activeCollection));
+            Assert.Empty(cleanupAfterFirstResponse.RemovedRevisions);
+            Assert.Equal([1L], cleanupAfterFirstResponse.DeferredRevisions);
+
+            var actualIds = new List<string>(firstPage.Items.Select(item => item.Id));
+            string? cursor = retiredCursor;
+            while (cursor is not null)
+            {
+                McpToolResponse<CodeSearchItem> page = Success(DispatchSearch(
+                    executor,
+                    Binding(secondSnapshot),
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor));
+                Assert.Equal(first.Snapshot.IndexRevision, page.IndexRevision);
+                Assert.Equal(
+                    "generation_retained_cursor_lease:document_fulltext:code_search",
+                    page.Diagnostics.AccessPath);
+                actualIds.AddRange(page.Items.Select(item => item.Id));
+                cursor = page.NextCursor;
+            }
+
+            Assert.Equal(expectedIds, actualIds);
+            Assert.Equal(actualIds.Count, actualIds.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            Assert.Equal(oldFullScansBefore, FullScanCount(oldCollection));
 
             DatabaseGenerationCleanupResult cleanupAfterRequest = store.CleanupRetired(
                 first.Snapshot.WorkspaceId);
@@ -209,6 +238,422 @@ public sealed class C1McpQueryCursorTests
         finally
         {
             DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_RetiredCursorLeaseExpiresAutomatically_ReleasesGenerationWithoutAnotherRequest()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        TimeSpan cursorLeaseRetention = TimeSpan.FromMinutes(1);
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            await File.WriteAllTextAsync(
+                Path.Combine(workspaceRoot, "Sample0.cs"),
+                "public class Sample0 { public string Replacement() => \"replacement\"; }");
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspaceRoot,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot secondSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                discovered,
+                first.Snapshot.IndexRevision);
+
+            using var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                timeProvider,
+                cursorLeaseRetention);
+            IndexPlanningSnapshot previous = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                store.ReadActivePlanningSnapshot(first.Snapshot.WorkspaceId)).PlanningSnapshot;
+            IncrementalIndexPlan secondPlan = IncrementalIndexPlanner.PlanFromPublished(
+                previous,
+                secondSnapshot);
+            DocumentCollectionStore oldCollection = store.GetActiveDocumentCollectionForTest(
+                first.Snapshot.WorkspaceId);
+            long oldFullScansBefore = FullScanCount(oldCollection);
+            IndexStageReport? secondReport = null;
+            var executor = new SonnetDbMcpToolExecutor(store, 0)
+            {
+                BeforeResponseSerializationTestHook = () =>
+                {
+                    secondReport = store.StageAndPublish(
+                        secondSnapshot,
+                        secondPlan,
+                        first.Report.DatabaseGenerationRevision!.Value);
+                },
+            };
+
+            McpToolResponse<CodeSearchItem> firstPage = Success(DispatchSearch(
+                executor,
+                Binding(first.Snapshot),
+                "SharedToken",
+                maxItems: 1));
+            string cursor = Assert.IsType<string>(firstPage.NextCursor);
+            Assert.Equal([1L], Assert.IsType<IndexStageReport>(secondReport).DeferredGenerationRevisions);
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+
+            executor.BeforeResponseSerializationTestHook = null;
+            DocumentCollectionStore activeCollection = store.GetActiveDocumentCollectionForTest(
+                first.Snapshot.WorkspaceId);
+            long activeFullScansBefore = FullScanCount(activeCollection);
+            TimeSpan halfRetention = TimeSpan.FromTicks(cursorLeaseRetention.Ticks / 2);
+            timeProvider.Advance(halfRetention);
+            McpToolResponse<CodeSearchItem> continued = Success(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor));
+            Assert.Equal(first.Snapshot.IndexRevision, continued.IndexRevision);
+            cursor = Assert.IsType<string>(continued.NextCursor);
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+
+            timeProvider.Advance(halfRetention);
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            McpError expired = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+
+            Assert.Equal(McpErrorCodes.StaleRevision, expired.Code);
+            Assert.Equal("query_cursor_stale", expired.Reason);
+            Assert.Equal(secondSnapshot.IndexRevision, expired.CurrentRevision);
+            Assert.Equal(oldFullScansBefore, FullScanCount(oldCollection));
+            Assert.Equal(activeFullScansBefore, FullScanCount(activeCollection));
+
+            DatabaseGenerationCleanupResult cleanup = store.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_CancelledContinuation_ReleasesLeaseAndRejectsReplayWithoutScan()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 3);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            DocumentCollectionStore collection = store.GetActiveDocumentCollectionForTest(
+                published.Snapshot.WorkspaceId);
+            long fullScansBefore = FullScanCount(collection);
+            var executor = new SonnetDbMcpToolExecutor(store, 0);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor = Assert.IsType<string>(Success(DispatchSearch(
+                executor,
+                binding,
+                "SharedToken",
+                maxItems: 1)).NextCursor);
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+
+            using var cancellation = new CancellationTokenSource();
+            executor.BeforeResponseSerializationTestHook = cancellation.Cancel;
+            McpDispatchResult cancelled = executor.Execute(
+                new CodeSearchRequest
+                {
+                    Budget = new QueryBudget
+                    {
+                        MaxItems = 1,
+                        MaxTokens = 65_536,
+                        MaxBytes = 1_000_000,
+                        DeadlineMs = 10_000,
+                    },
+                    Cursor = cursor,
+                    Query = "SharedToken",
+                    Mode = "fulltext",
+                },
+                binding,
+                "query-cursor-cancel-test",
+                cancellation.Token);
+
+            McpError cancelledError = Assert.IsType<McpError>(cancelled.Error);
+            Assert.Equal(McpErrorCodes.Cancelled, cancelledError.Code);
+            Assert.Equal("client_cancelled", cancelledError.Reason);
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            executor.BeforeResponseSerializationTestHook = null;
+
+            McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+            Assert.Equal("query_cursor_invalid", replay.Reason);
+            Assert.Equal(fullScansBefore, FullScanCount(collection));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_RetiredContinuationFault_ReleasesLeaseAndAllowsCleanup()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            DocumentCollectionStore oldCollection = store.GetActiveDocumentCollectionForTest(
+                first.Snapshot.WorkspaceId);
+            long fullScansBefore = FullScanCount(oldCollection);
+            string cursor = CreateSignedCursor(
+                store,
+                first.Snapshot.WorkspaceId,
+                "SharedToken",
+                offset: 0);
+            WorkspaceIndexSnapshot secondSnapshot = await PublishReplacementAsync(
+                workspaceRoot,
+                store,
+                first);
+            Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+
+            var executor = new SonnetDbMcpToolExecutor(store, 0)
+            {
+                BeforeResponseSerializationTestHook = () =>
+                    throw new IOException("controlled_query_response_fault"),
+            };
+            McpDispatchResult failed;
+            try
+            {
+                failed = DispatchSearch(
+                    executor,
+                    Binding(secondSnapshot),
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor);
+            }
+            finally
+            {
+                executor.BeforeResponseSerializationTestHook = null;
+            }
+
+            McpError error = Assert.IsType<McpError>(failed.Error);
+            Assert.Equal(McpErrorCodes.IndexCorrupt, error.Code);
+            Assert.Equal("active_generation_validation_failed", error.Reason);
+            Assert.Equal(0, store.RetainedIndexQueryLeaseCountForTest);
+            Assert.Equal(fullScansBefore, FullScanCount(oldCollection));
+
+            DatabaseGenerationCleanupResult cleanup = store.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+
+            McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.StaleRevision, replay.Code);
+            Assert.Equal("query_cursor_stale", replay.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_DisposeWithRetiredCursorLease_ReopenCanCleanupGeneration()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 3);
+            WorkspaceIndexSnapshot secondSnapshot;
+            var store = new SonnetDbIndexGenerationStore(database);
+            try
+            {
+                _ = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 0);
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, store, first);
+                Assert.Equal(1, store.RetainedIndexQueryLeaseCountForTest);
+                Assert.Equal(
+                    [1L, 2L],
+                    store.ListGenerationRevisionsForTest(first.Snapshot.WorkspaceId));
+            }
+            finally
+            {
+                store.Dispose();
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            DatabaseGenerationCleanupResult cleanup = reopened.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+            Assert.Equal(
+                [2L],
+                reopened.ListGenerationRevisionsForTest(secondSnapshot.WorkspaceId));
+            ActiveIndexPlanningSnapshot active = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                reopened.ReadActivePlanningSnapshot(secondSnapshot.WorkspaceId));
+            Assert.Equal(secondSnapshot.IndexRevision, active.PlanningSnapshot.IndexRevision);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task CodeSearch_RetainedLeaseCapacity_BlocksNewFullTextButAllowsExactWithoutScan()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 2);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            DocumentCollectionStore collection = store.GetActiveDocumentCollectionForTest(
+                published.Snapshot.WorkspaceId);
+            long fullScansBefore = FullScanCount(collection);
+            var retainedCursors = new List<string>();
+            for (int index = 0;
+                index < SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest;
+                index++)
+            {
+                retainedCursors.Add(CreateSignedCursor(
+                    store,
+                    published.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    index));
+            }
+
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                store.RetainedIndexQueryLeaseCountForTest);
+            bool responseSerializationReached = false;
+            var executor = new SonnetDbMcpToolExecutor(store, 0)
+            {
+                BeforeResponseSerializationTestHook = () => responseSerializationReached = true,
+            };
+            McpError capacity = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1).Error);
+
+            Assert.Equal(McpErrorCodes.BudgetExhausted, capacity.Code);
+            Assert.Equal("query_cursor_lease_capacity_exhausted", capacity.Reason);
+            Assert.False(responseSerializationReached);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                store.RetainedIndexQueryLeaseCountForTest);
+            Assert.Equal(fullScansBefore, FullScanCount(collection));
+
+            string exactId = IndexStorageMapper.CreateDocuments(published.Snapshot)[0].StableId;
+            McpToolResponse<CodeSearchItem> exact = Success(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                exactId,
+                maxItems: 1,
+                mode: "exact"));
+
+            Assert.Single(exact.Items);
+            Assert.Equal(exactId, exact.Items[0].Id);
+            Assert.Null(exact.NextCursor);
+            Assert.True(responseSerializationReached);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                store.RetainedIndexQueryLeaseCountForTest);
+            Assert.Equal(fullScansBefore, FullScanCount(collection));
+
+            McpToolResponse<CodeSearchItem> finalPage = Success(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 100,
+                retainedCursors[0]));
+            Assert.Null(finalPage.NextCursor);
+            Assert.False(finalPage.Truncated);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest - 1,
+                store.RetainedIndexQueryLeaseCountForTest);
+
+            McpToolResponse<CodeSearchItem> replacementCursor = Success(DispatchSearch(
+                executor,
+                Binding(published.Snapshot),
+                "SharedToken",
+                maxItems: 1));
+            Assert.NotNull(replacementCursor.NextCursor);
+            Assert.Equal(
+                SonnetDbIndexGenerationStore.MaximumRetainedIndexQueryLeasesForTest,
+                store.RetainedIndexQueryLeaseCountForTest);
+            Assert.Equal(fullScansBefore, FullScanCount(collection));
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public void Store_WithNegativeCursorLeaseRetention_FailsBeforeCreatingDatabase()
+    {
+        string database = Path.Combine(
+            Path.GetTempPath(),
+            "couplet-query-cursor-negative-" + Guid.NewGuid().ToString("N"));
+
+        ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+        {
+            using var store = new SonnetDbIndexGenerationStore(
+                database,
+                TimeSpan.Zero,
+                TimeProvider.System,
+                TimeSpan.FromTicks(-1));
+        });
+
+        Assert.Equal("queryCursorLeaseRetention", exception.ParamName);
+        Assert.False(Directory.Exists(database));
+    }
+
+    [Fact]
+    public void Store_LegacyThreeParameterConstructor_RemainsCallableByClrSignature()
+    {
+        string database = TemporaryDirectory();
+        try
+        {
+            System.Reflection.ConstructorInfo? legacyConstructor =
+                typeof(SonnetDbIndexGenerationStore).GetConstructor(
+                    [typeof(string), typeof(TimeSpan), typeof(TimeProvider)]);
+            Assert.NotNull(legacyConstructor);
+            System.Reflection.ParameterInfo timeProviderParameter = legacyConstructor.GetParameters()[2];
+            Assert.True(timeProviderParameter.IsOptional);
+            Assert.Null(timeProviderParameter.DefaultValue);
+            Assert.NotNull(typeof(SonnetDbIndexGenerationStore).GetConstructor(
+                [typeof(string), typeof(TimeSpan), typeof(TimeProvider), typeof(TimeSpan)]));
+
+            using var store = Assert.IsType<SonnetDbIndexGenerationStore>(
+                legacyConstructor.Invoke([database, TimeSpan.Zero, null]));
+        }
+        finally
+        {
             DeleteTemporaryDirectory(database);
         }
     }
@@ -315,6 +760,7 @@ public sealed class C1McpQueryCursorTests
             string? cursor = null;
             do
             {
+                bool retainedCursorLease = cursor is not null;
                 McpToolResponse<CodeSearchItem> page = Success(DispatchSearch(
                     executor,
                     binding,
@@ -325,7 +771,10 @@ public sealed class C1McpQueryCursorTests
                     language: "CSHARP",
                     kind: CodeEntityKind.Chunk));
                 Assert.Equal(
-                    "generation_active_lease:document_fulltext_filtered:code_search:"
+                    (retainedCursorLease
+                        ? "generation_retained_cursor_lease:"
+                        : "generation_active_lease:")
+                    + "document_fulltext_filtered:code_search:"
                     + "planning_snapshot_path_glob+document_path_index:by_path+"
                     + "document_path_index:by_language+"
                     + "document_path_index:by_entity_kind",
@@ -576,7 +1025,8 @@ public sealed class C1McpQueryCursorTests
         int maxBytes = 1_000_000,
         string? path = null,
         string? language = null,
-        CodeEntityKind? kind = null) => executor.Execute(
+        CodeEntityKind? kind = null,
+        string mode = "fulltext") => executor.Execute(
             new CodeSearchRequest
             {
                 Budget = new QueryBudget
@@ -588,7 +1038,7 @@ public sealed class C1McpQueryCursorTests
                 },
                 Cursor = cursor,
                 Query = query,
-                Mode = "fulltext",
+                Mode = mode,
                 Path = path,
                 Language = language,
                 Kind = kind,
@@ -603,10 +1053,20 @@ public sealed class C1McpQueryCursorTests
         string query,
         long offset)
     {
-        using ActiveIndexQueryLease lease = store.AcquireActiveIndexQuery(workspaceId);
-        Span<byte> state = stackalloc byte[sizeof(long)];
+        string queryFingerprint = CodeSearchFingerprint(query);
+        using IndexQueryRequestLease requestLease = store.AcquireIndexQuery(
+            workspaceId,
+            cursor: null,
+            queryFingerprint,
+            reserveQueryLeaseSlot: true);
+        Span<byte> state = stackalloc byte[sizeof(long) + 16];
         BinaryPrimitives.WriteInt64LittleEndian(state, offset);
-        return lease.CreateCursor(CodeSearchFingerprint(query), state);
+        _ = Guid.NewGuid().TryWriteBytes(state[sizeof(long)..]);
+        string cursor = requestLease.Lease.CreateCursor(queryFingerprint, state);
+        Assert.Equal(
+            IndexQueryCursorRetentionResult.Retained,
+            requestLease.TryRetain(cursor, queryFingerprint));
+        return cursor;
     }
 
     private static string CodeSearchFingerprint(string query)
@@ -664,6 +1124,34 @@ public sealed class C1McpQueryCursorTests
             0);
         Assert.True(report.Published);
         return new PublishedIndex(snapshot, report);
+    }
+
+    private static async Task<WorkspaceIndexSnapshot> PublishReplacementAsync(
+        string workspaceRoot,
+        SonnetDbIndexGenerationStore store,
+        PublishedIndex first)
+    {
+        await File.WriteAllTextAsync(
+            Path.Combine(workspaceRoot, "Sample0.cs"),
+            "public class Sample0 { public string Replacement() => \"replacement\"; }");
+        DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+            workspaceRoot,
+            WorkspaceDiscoveryService.DefaultPolicy);
+        WorkspaceIndexSnapshot secondSnapshot = await IndexSnapshotBuilder.BuildAsync(
+            discovered,
+            first.Snapshot.IndexRevision);
+        IndexPlanningSnapshot previous = Assert.IsType<ActiveIndexPlanningSnapshot>(
+            store.ReadActivePlanningSnapshot(first.Snapshot.WorkspaceId)).PlanningSnapshot;
+        IncrementalIndexPlan plan = IncrementalIndexPlanner.PlanFromPublished(
+            previous,
+            secondSnapshot);
+        IndexStageReport report = store.StageAndPublish(
+            secondSnapshot,
+            plan,
+            first.Report.DatabaseGenerationRevision!.Value);
+        Assert.True(report.Published);
+        Assert.Equal([1L], report.DeferredGenerationRevisions);
+        return secondSnapshot;
     }
 
     private static async Task<PublishedIndex> PublishFilteredFixtureAsync(
@@ -741,5 +1229,167 @@ public sealed class C1McpQueryCursorTests
     private sealed record PublishedIndex(
         WorkspaceIndexSnapshot Snapshot,
         IndexStageReport Report);
+
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private readonly object _sync = new();
+        private DateTimeOffset _utcNow = utcNow;
+        private ManualTimer? _timer;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_sync)
+            {
+                return _utcNow;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ArgumentNullException.ThrowIfNull(callback);
+            ValidateTimerInterval(dueTime, nameof(dueTime));
+            ValidateTimerInterval(period, nameof(period));
+            lock (_sync)
+            {
+                if (_timer is not null)
+                {
+                    throw new InvalidOperationException("The test provider supports one timer.");
+                }
+
+                var timer = new ManualTimer(this, callback, state);
+                timer.ChangeUnsafe(_utcNow, dueTime, period);
+                _timer = timer;
+                return timer;
+            }
+        }
+
+        internal void Advance(TimeSpan amount)
+        {
+            if (amount < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(amount), amount, "Advance cannot be negative.");
+            }
+
+            lock (_sync)
+            {
+                _utcNow += amount;
+            }
+
+            while (true)
+            {
+                TimerCallback callback;
+                object? state;
+                lock (_sync)
+                {
+                    if (_timer is null
+                        || !_timer.TryTakeDueUnsafe(_utcNow, out callback, out state))
+                    {
+                        return;
+                    }
+                }
+
+                callback(state);
+            }
+        }
+
+        private bool Change(
+            ManualTimer timer,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ValidateTimerInterval(dueTime, nameof(dueTime));
+            ValidateTimerInterval(period, nameof(period));
+            lock (_sync)
+            {
+                if (!ReferenceEquals(_timer, timer) || timer.IsDisposedUnsafe)
+                {
+                    return false;
+                }
+
+                timer.ChangeUnsafe(_utcNow, dueTime, period);
+                return true;
+            }
+        }
+
+        private void Dispose(ManualTimer timer)
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_timer, timer))
+                {
+                    timer.DisposeUnsafe();
+                }
+            }
+        }
+
+        private static void ValidateTimerInterval(TimeSpan value, string parameterName)
+        {
+            if (value < TimeSpan.Zero && value != Timeout.InfiniteTimeSpan)
+            {
+                throw new ArgumentOutOfRangeException(parameterName, value, "Invalid timer interval.");
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state) : ITimer
+        {
+            private DateTimeOffset? _dueAtUtc;
+            private TimeSpan _period;
+
+            internal bool IsDisposedUnsafe { get; private set; }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) =>
+                owner.Change(this, dueTime, period);
+
+            public void Dispose() => owner.Dispose(this);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+
+            internal void ChangeUnsafe(
+                DateTimeOffset nowUtc,
+                TimeSpan dueTime,
+                TimeSpan period)
+            {
+                _period = period;
+                _dueAtUtc = dueTime == Timeout.InfiniteTimeSpan
+                    ? null
+                    : nowUtc + dueTime;
+            }
+
+            internal bool TryTakeDueUnsafe(
+                DateTimeOffset nowUtc,
+                out TimerCallback dueCallback,
+                out object? dueState)
+            {
+                dueCallback = callback;
+                dueState = state;
+                if (IsDisposedUnsafe || _dueAtUtc is null || _dueAtUtc > nowUtc)
+                {
+                    return false;
+                }
+
+                _dueAtUtc = _period <= TimeSpan.Zero || _period == Timeout.InfiniteTimeSpan
+                    ? null
+                    : nowUtc + _period;
+                return true;
+            }
+
+            internal void DisposeUnsafe()
+            {
+                IsDisposedUnsafe = true;
+                _dueAtUtc = null;
+            }
+        }
+    }
 }
 #endif

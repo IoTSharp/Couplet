@@ -32,6 +32,10 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private const string _planningRole = "index_planning";
     private const string _planningSnapshotKey = "planning_snapshot";
     private const string _publishedManifestKey = "generation_manifest";
+    private const int _maximumRetainedQueryLeases = 128;
+    private static readonly TimeSpan _defaultQueryCursorLeaseRetention = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan _maximumQueryLeaseTimerDueTime =
+        TimeSpan.FromMilliseconds(uint.MaxValue - 1d);
     private static readonly string[] _cleanupFailureLimitations =
         ["CPL-015:retired_generation_cleanup_retry_required"];
 #endif
@@ -39,8 +43,14 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private readonly KvKeyspace _control;
     private readonly bool _backgroundMaintenanceEnabled;
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private readonly object _retainedQueryLeaseSync = new();
+    private readonly Dictionary<string, RetainedIndexQueryCursor> _retainedQueryLeases =
+        new(StringComparer.Ordinal);
+    private readonly ITimer _retainedQueryLeaseTimer;
+    private readonly TimeSpan _queryCursorLeaseRetention;
     private readonly TimeSpan _retiredGenerationRetention;
     private readonly TimeProvider _timeProvider;
+    private int _queryLeaseSlotCount;
 #endif
     private bool _disposed;
 
@@ -90,6 +100,26 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         string databaseRoot,
         TimeSpan retiredGenerationRetention,
         TimeProvider? timeProvider = null)
+        : this(
+            databaseRoot,
+            retiredGenerationRetention,
+            timeProvider,
+            _defaultQueryCursorLeaseRetention)
+    {
+    }
+
+    /// <summary>
+    /// 打开 source lane SonnetDB store，并分别配置 retired generation 与分页 cursor lease 保留时长。
+    /// </summary>
+    /// <param name="databaseRoot">显式数据库目录。</param>
+    /// <param name="retiredGenerationRetention">retired generation 从发布时间起算、达到后具备清理资格的时长；零值保持立即清理。</param>
+    /// <param name="timeProvider">用于计算 cleanup cutoff 与 cursor lease 到期时间的时钟。</param>
+    /// <param name="queryCursorLeaseRetention">分页 cursor 跨请求保留 generation lease 的绝对时长；零值禁用续页保留。</param>
+    public SonnetDbIndexGenerationStore(
+        string databaseRoot,
+        TimeSpan retiredGenerationRetention,
+        TimeProvider? timeProvider,
+        TimeSpan queryCursorLeaseRetention)
     {
         if (retiredGenerationRetention < TimeSpan.Zero)
         {
@@ -99,14 +129,36 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 "Retired generation retention cannot be negative.");
         }
 
+        if (queryCursorLeaseRetention < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(queryCursorLeaseRetention),
+                queryCursorLeaseRetention,
+                "Query cursor lease retention cannot be negative.");
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseRoot);
         string root = Path.GetFullPath(databaseRoot);
         Directory.CreateDirectory(root);
         _retiredGenerationRetention = retiredGenerationRetention;
+        _queryCursorLeaseRetention = queryCursorLeaseRetention;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _backgroundMaintenanceEnabled = true;
         _database = Tsdb.Open(new TsdbOptions { RootDirectory = root });
         _control = _database.Keyspaces.Open(_controlKeyspaceName);
+        try
+        {
+            _retainedQueryLeaseTimer = _timeProvider.CreateTimer(
+                static state => ((SonnetDbIndexGenerationStore)state!).ReleaseExpiredRetainedQueryLeases(),
+                this,
+                Timeout.InfiniteTimeSpan,
+                Timeout.InfiniteTimeSpan);
+        }
+        catch
+        {
+            _database.Dispose();
+            throw;
+        }
     }
 #endif
 
@@ -480,6 +532,182 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         }
     }
 
+    internal IndexQueryRequestLease AcquireIndexQuery(
+        string workspaceId,
+        string? cursor,
+        string? queryFingerprint,
+        bool reserveQueryLeaseSlot)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        if (queryFingerprint is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
+        }
+
+        if (cursor is not null && reserveQueryLeaseSlot)
+        {
+            throw new ArgumentException(
+                "A continuation cursor transfers its existing query lease slot.",
+                nameof(reserveQueryLeaseSlot));
+        }
+
+        if (cursor is null)
+        {
+            ReleaseExpiredRetainedQueryLeases();
+            bool ownsQueryLeaseSlot = reserveQueryLeaseSlot;
+            if (ownsQueryLeaseSlot && !TryReserveIndexQueryLeaseSlot())
+            {
+                throw new IndexQueryCursorLeaseException(
+                    IndexQueryCursorLeaseFailure.CapacityExceeded);
+            }
+
+            try
+            {
+                return new IndexQueryRequestLease(
+                    this,
+                    AcquireActiveIndexQuery(workspaceId),
+                    QueryCursorLeaseExpirationUtc(),
+                    cursorRecognized: false,
+                    ownsQueryLeaseSlot);
+            }
+            catch
+            {
+                if (ownsQueryLeaseSlot)
+                {
+                    ReleaseIndexQueryLeaseSlot();
+                }
+
+                throw;
+            }
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(cursor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
+        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+        List<RetainedIndexQueryCursor> expired;
+        RetainedIndexQueryCursor? retained = null;
+        bool requestedCursorExpired;
+        bool requestedCursorMismatch = false;
+        lock (_retainedQueryLeaseSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            expired = RemoveExpiredRetainedQueryLeasesUnsafe(
+                nowUtc,
+                cursor,
+                out requestedCursorExpired);
+            if (!requestedCursorExpired
+                && _retainedQueryLeases.TryGetValue(cursor, out RetainedIndexQueryCursor? candidate))
+            {
+                if (!string.Equals(candidate.WorkspaceId, workspaceId, StringComparison.Ordinal)
+                    || !string.Equals(
+                        candidate.QueryFingerprint,
+                        queryFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    requestedCursorMismatch = true;
+                }
+                else
+                {
+                    _retainedQueryLeases.Remove(cursor);
+                    retained = candidate;
+                }
+            }
+
+            ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+        }
+
+        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
+        if (requestedCursorExpired)
+        {
+            throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Expired);
+        }
+
+        if (requestedCursorMismatch)
+        {
+            throw new IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure.Mismatch);
+        }
+
+        if (retained is not null)
+        {
+            return new IndexQueryRequestLease(
+                this,
+                retained.Lease,
+                retained.ExpiresAtUtc,
+                cursorRecognized: true,
+                ownsQueryLeaseSlot: true);
+        }
+
+        return new IndexQueryRequestLease(
+            this,
+            AcquireActiveIndexQuery(workspaceId),
+            QueryCursorLeaseExpirationUtc(),
+            cursorRecognized: false,
+            ownsQueryLeaseSlot: false);
+    }
+
+    internal IndexQueryCursorRetentionResult RetainIndexQueryCursor(
+        string cursor,
+        string queryFingerprint,
+        ActiveIndexQueryLease lease,
+        DateTimeOffset expiresAtUtc)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cursor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(queryFingerprint);
+        ArgumentNullException.ThrowIfNull(lease);
+        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+        List<RetainedIndexQueryCursor> expired;
+        IndexQueryCursorRetentionResult result;
+        lock (_retainedQueryLeaseSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            expired = RemoveExpiredRetainedQueryLeasesUnsafe(
+                nowUtc,
+                requestedCursor: null,
+                out _);
+            if (expiresAtUtc <= nowUtc)
+            {
+                result = IndexQueryCursorRetentionResult.Expired;
+            }
+            else if (_retainedQueryLeases.ContainsKey(cursor))
+            {
+                result = IndexQueryCursorRetentionResult.CapacityExceeded;
+            }
+            else
+            {
+                _retainedQueryLeases.Add(
+                    cursor,
+                    new RetainedIndexQueryCursor(
+                        lease.Manifest.WorkspaceId,
+                        queryFingerprint,
+                        expiresAtUtc,
+                        lease));
+                result = IndexQueryCursorRetentionResult.Retained;
+            }
+
+            ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+        }
+
+        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
+        return result;
+    }
+
+    internal int RetainedIndexQueryLeaseCountForTest
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            lock (_retainedQueryLeaseSync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                return _queryLeaseSlotCount;
+            }
+        }
+    }
+
+    internal static int MaximumRetainedIndexQueryLeasesForTest => _maximumRetainedQueryLeases;
+
     internal ActiveIndexSearchResult QueryActiveCodeSearch(
         ActiveIndexQueryLease lease,
         string mode,
@@ -832,6 +1060,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        cancellationToken.ThrowIfCancellationRequested();
+        ReleaseExpiredRetainedQueryLeases();
         if (CleanupRetiredTestHook is not null)
         {
             return CleanupRetiredTestHook(workspaceId, cancellationToken);
@@ -1042,8 +1272,26 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             return;
         }
 
-        _database.Dispose();
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        List<RetainedIndexQueryCursor> retained;
+        lock (_retainedQueryLeaseSync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            retained = _retainedQueryLeases.Values.ToList();
+            _retainedQueryLeases.Clear();
+        }
+
+        _retainedQueryLeaseTimer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        DisposeRetainedQueryLeasesAndReleaseSlots(retained);
+#else
         _disposed = true;
+#endif
+        _database.Dispose();
     }
 
     private IndexStageReport Report(
@@ -1239,6 +1487,133 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             : nowUtc - _retiredGenerationRetention;
     }
 
+    private DateTimeOffset QueryCursorLeaseExpirationUtc()
+    {
+        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+        TimeSpan remaining = DateTimeOffset.MaxValue - nowUtc;
+        return _queryCursorLeaseRetention > remaining
+            ? DateTimeOffset.MaxValue
+            : nowUtc + _queryCursorLeaseRetention;
+    }
+
+    private void ReleaseExpiredRetainedQueryLeases()
+    {
+        DateTimeOffset nowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+        List<RetainedIndexQueryCursor> expired;
+        lock (_retainedQueryLeaseSync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            expired = RemoveExpiredRetainedQueryLeasesUnsafe(
+                nowUtc,
+                requestedCursor: null,
+                out _);
+            ScheduleRetainedQueryLeaseTimerUnsafe(nowUtc);
+        }
+
+        DisposeRetainedQueryLeasesAndReleaseSlots(expired);
+    }
+
+    private bool TryReserveIndexQueryLeaseSlot()
+    {
+        lock (_retainedQueryLeaseSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_queryLeaseSlotCount >= _maximumRetainedQueryLeases)
+            {
+                return false;
+            }
+
+            _queryLeaseSlotCount = checked(_queryLeaseSlotCount + 1);
+            return true;
+        }
+    }
+
+    internal void ReleaseIndexQueryLeaseSlot()
+    {
+        lock (_retainedQueryLeaseSync)
+        {
+            if (_queryLeaseSlotCount <= 0)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                throw new InvalidOperationException("Index query lease slot accounting underflow.");
+            }
+
+            _queryLeaseSlotCount--;
+        }
+    }
+
+    private void ScheduleRetainedQueryLeaseTimerUnsafe(DateTimeOffset nowUtc)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        DateTimeOffset? earliestExpiration = _retainedQueryLeases.Count == 0
+            ? null
+            : _retainedQueryLeases.Values.Min(retained => retained.ExpiresAtUtc);
+        if (earliestExpiration is null)
+        {
+            _ = _retainedQueryLeaseTimer.Change(
+                Timeout.InfiniteTimeSpan,
+                Timeout.InfiniteTimeSpan);
+            return;
+        }
+
+        TimeSpan dueTime = earliestExpiration <= nowUtc
+            ? TimeSpan.Zero
+            : earliestExpiration.Value - nowUtc;
+        if (dueTime > _maximumQueryLeaseTimerDueTime)
+        {
+            dueTime = _maximumQueryLeaseTimerDueTime;
+        }
+
+        _ = _retainedQueryLeaseTimer.Change(dueTime, Timeout.InfiniteTimeSpan);
+    }
+
+    private List<RetainedIndexQueryCursor> RemoveExpiredRetainedQueryLeasesUnsafe(
+        DateTimeOffset nowUtc,
+        string? requestedCursor,
+        out bool requestedCursorExpired)
+    {
+        requestedCursorExpired = false;
+        var expired = new List<RetainedIndexQueryCursor>();
+        foreach ((string cursor, RetainedIndexQueryCursor retained) in _retainedQueryLeases
+            .Where(entry => entry.Value.ExpiresAtUtc <= nowUtc)
+            .ToArray())
+        {
+            _retainedQueryLeases.Remove(cursor);
+            expired.Add(retained);
+            requestedCursorExpired |= string.Equals(cursor, requestedCursor, StringComparison.Ordinal);
+        }
+
+        return expired;
+    }
+
+    private void DisposeRetainedQueryLeasesAndReleaseSlots(
+        IEnumerable<RetainedIndexQueryCursor> retainedQueryLeases)
+    {
+        foreach (RetainedIndexQueryCursor retained in retainedQueryLeases)
+        {
+            try
+            {
+                retained.Lease.Dispose();
+            }
+            finally
+            {
+                ReleaseIndexQueryLeaseSlot();
+            }
+        }
+    }
+
     private static string PlanningKeyspaceName(string workspaceId, string indexRevision)
     {
         string value = "planning\0" + workspaceId + "\0" + indexRevision;
@@ -1309,6 +1684,100 @@ internal sealed class ActiveIndexQueryLease : IDisposable
         _lease.ReadCursor(cursor, queryFingerprint);
 
     public void Dispose() => _lease.Dispose();
+}
+
+internal sealed class IndexQueryRequestLease : IDisposable
+{
+    private readonly SonnetDbIndexGenerationStore _owner;
+    private ActiveIndexQueryLease? _lease;
+    private int _ownsQueryLeaseSlot;
+
+    internal IndexQueryRequestLease(
+        SonnetDbIndexGenerationStore owner,
+        ActiveIndexQueryLease lease,
+        DateTimeOffset expiresAtUtc,
+        bool cursorRecognized,
+        bool ownsQueryLeaseSlot)
+    {
+        _owner = owner;
+        _lease = lease;
+        ExpiresAtUtc = expiresAtUtc;
+        CursorRecognized = cursorRecognized;
+        _ownsQueryLeaseSlot = ownsQueryLeaseSlot ? 1 : 0;
+    }
+
+    internal ActiveIndexQueryLease Lease => _lease
+        ?? throw new ObjectDisposedException(nameof(IndexQueryRequestLease));
+
+    internal bool CursorRecognized { get; }
+
+    internal DateTimeOffset ExpiresAtUtc { get; }
+
+    internal IndexQueryCursorRetentionResult TryRetain(
+        string cursor,
+        string queryFingerprint)
+    {
+        ActiveIndexQueryLease lease = Lease;
+        IndexQueryCursorRetentionResult result = _owner.RetainIndexQueryCursor(
+            cursor,
+            queryFingerprint,
+            lease,
+            ExpiresAtUtc);
+        if (result == IndexQueryCursorRetentionResult.Retained)
+        {
+            _lease = null;
+            _ = Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0);
+        }
+
+        return result;
+    }
+
+    public void Dispose()
+    {
+        ActiveIndexQueryLease? lease = Interlocked.Exchange(ref _lease, null);
+        try
+        {
+            lease?.Dispose();
+        }
+        finally
+        {
+            if (Interlocked.Exchange(ref _ownsQueryLeaseSlot, 0) != 0)
+            {
+                _owner.ReleaseIndexQueryLeaseSlot();
+            }
+        }
+    }
+}
+
+internal sealed record RetainedIndexQueryCursor(
+    string WorkspaceId,
+    string QueryFingerprint,
+    DateTimeOffset ExpiresAtUtc,
+    ActiveIndexQueryLease Lease);
+
+internal enum IndexQueryCursorRetentionResult
+{
+    Retained,
+    Expired,
+    CapacityExceeded,
+}
+
+internal enum IndexQueryCursorLeaseFailure
+{
+    Expired,
+    Mismatch,
+    CapacityExceeded,
+}
+
+internal sealed class IndexQueryCursorLeaseException : InvalidOperationException
+{
+    internal IndexQueryCursorLeaseException(IndexQueryCursorLeaseFailure failure)
+        : base("The retained index query cursor lease is unavailable.")
+    {
+        Failure = failure;
+    }
+
+    internal IndexQueryCursorLeaseFailure Failure { get; }
 }
 
 internal sealed record ActiveIndexSearchHit(

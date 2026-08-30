@@ -20,6 +20,13 @@ namespace Couplet.Infrastructure.SonnetDb;
 /// </summary>
 public static class CoupletRuntime
 {
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private const string ProcessCrashTestHooksEnvironmentVariable =
+        "COUPLET_ENABLE_PROCESS_CRASH_TEST_HOOKS";
+    private const string ProcessCrashTestPublishPauseOption =
+        "--internal-test-publish-pause";
+#endif
+
     /// <summary>
     /// 通过指定输入输出运行一个 Couplet 组件。
     /// </summary>
@@ -194,6 +201,26 @@ public static class CoupletRuntime
                     error,
                     "invalid_retired_generation_retention").ConfigureAwait(false);
             }
+
+            if (!TryGetProcessCrashTestPublishPause(
+                    arguments,
+                    out IndexGenerationPublishFaultPoint? processCrashTestPublishPause))
+            {
+                return await WriteIndexErrorAsync(
+                    error,
+                    "invalid_process_crash_test_publish_pause").ConfigureAwait(false);
+            }
+
+            if (processCrashTestPublishPause is not null
+                && !string.Equals(
+                    Environment.GetEnvironmentVariable(ProcessCrashTestHooksEnvironmentVariable),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                return await WriteIndexErrorAsync(
+                    error,
+                    "process_crash_test_hooks_disabled").ConfigureAwait(false);
+            }
 #endif
 
             using IndexWriterFence writerFence = await IndexWriterFence.AcquireAsync(
@@ -217,6 +244,11 @@ public static class CoupletRuntime
             using var store = new SonnetDbIndexGenerationStore(
                 databasePath,
                 retiredGenerationRetention);
+            ConfigureProcessCrashTestPublishPause(
+                store,
+                processCrashTestPublishPause,
+                output,
+                cancellationToken);
             ActiveIndexPlanningSnapshot? active = store.ReadActivePlanningSnapshot(
                 workspace.Result.WorkspaceId);
             WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
@@ -473,6 +505,71 @@ public static class CoupletRuntime
     }
 
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static void ConfigureProcessCrashTestPublishPause(
+        SonnetDbIndexGenerationStore store,
+        IndexGenerationPublishFaultPoint? pausePoint,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        if (pausePoint is not { } expectedPoint)
+        {
+            return;
+        }
+
+        store.PublishFaultTestHook = observedPoint =>
+        {
+            if (observedPoint != expectedPoint)
+            {
+                return;
+            }
+
+            string pointName = observedPoint == IndexGenerationPublishFaultPoint.BeforeCommit
+                ? "before-commit"
+                : "after-commit";
+            output.WriteLine($"couplet.internal-test.publish-paused:{pointName}");
+            output.Flush();
+            using var processCrashWait = new ManualResetEventSlim(initialState: false);
+            processCrashWait.Wait(cancellationToken);
+        };
+    }
+
+    private static bool TryGetProcessCrashTestPublishPause(
+        IReadOnlyList<string> arguments,
+        out IndexGenerationPublishFaultPoint? pausePoint)
+    {
+        pausePoint = null;
+        bool found = false;
+        for (int index = 1; index < arguments.Count; index++)
+        {
+            if (!string.Equals(
+                    arguments[index],
+                    ProcessCrashTestPublishPauseOption,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (found || index == arguments.Count - 1)
+            {
+                return false;
+            }
+
+            found = true;
+            pausePoint = arguments[++index] switch
+            {
+                "before-commit" => IndexGenerationPublishFaultPoint.BeforeCommit,
+                "after-commit" => IndexGenerationPublishFaultPoint.AfterCommit,
+                _ => null,
+            };
+            if (pausePoint is null)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static bool TryGetRetiredGenerationRetention(
         IReadOnlyList<string> arguments,
         out TimeSpan retention)

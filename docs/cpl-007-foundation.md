@@ -2,14 +2,14 @@
 
 ## 1. 当前范围
 
-CPL-007 提供可独立 restore/build/test 的 .NET 10 solution、固定 SonnetDB package、三个 executable、source-generated JSON 和诚实能力报告。C0 同时完成 capability handshake、evidence runner 和 typed MCP schema；C1 索引、C2 图查询和 C3 混合检索仍未实现。
+CPL-007 提供可独立 restore/build/test 的 .NET 10 solution、固定 SonnetDB package、三个 executable、source-generated JSON 和诚实能力报告。C0 同时完成 capability handshake、evidence runner 和 typed MCP schema；C1 在默认 package lane 仍保持安全 staging，在显式 source lane 已接通 generation 发布与首批只读 MCP 查询，C2 图查询和 C3 混合检索仍未实现。
 
 当前可观察行为：
 
-- CLI：`version`、`capabilities`、`c0-evidence`、`fixture-generate`。
+- CLI：`version`、`capabilities`、`c0-evidence`、`fixture-generate`、`workspace-scan`、`index-stage` 和 `c1-capacity`。
 - daemon：`version`、`capabilities`、可取消的 `run` 生命周期。
 - MCP Server：`version`、`capabilities`，以及显式 `--workspace` 绑定的 stdio `initialize`、`ping`、`tools/list`、`tools/call`。
-- MCP Server 公开八个只读 schema；未就绪工具返回版本化错误和 gap，不执行查询或 fallback。
+- MCP Server 公开八个只读 schema；source lane 配置显式 workspace/database 后开放 `workspace_status`、`code_search` exact/fulltext Preview 和 `symbol_get`，未就绪工具返回版本化错误和 gap，不执行 fallback。
 - 所有生产 JSON 使用 source-generated `JsonSerializerContext`，未知请求字段拒绝，反射 JSON 默认关闭。
 
 ## 2. solution 与依赖图
@@ -70,9 +70,9 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
-| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source publish PASS、长稳待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext 过滤已接线；真实 fault/capacity 未完成 |
+| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source publish PASS、长稳待归档 | 否 | source 已 publish/cutoff cleanup，并有本机真实子进程 commit 前后 kill/reopen 回归；固定硬件容量复测、随机故障和长稳未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同 active cursor/no-scan、path/language/entity-kind 过滤与 `symbol_get`、其余 unavailable tools | PASS | source publish PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；跨 generation cursor、C2/C3 工具仍 unavailable |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同进程 active/retired cursor/no-scan、path/language/entity-kind 过滤与 `symbol_get`、其余 unavailable tools | PASS | source publish PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；cursor 不跨进程重启，C2/C3 工具仍 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：
