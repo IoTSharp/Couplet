@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Couplet.Application.Indexing;
 using Couplet.Application.Serialization;
+using Couplet.Core.Graph;
 using Couplet.Core.Indexing;
 using SonnetDB.Documents;
 using SonnetDB.Engine;
@@ -550,6 +551,63 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             hydrated);
     }
 
+    internal ActiveIndexSymbolQueryResult QueryActiveSymbol(
+        ActiveIndexQueryLease lease,
+        string? symbolId,
+        string? qualifiedIdentity,
+        string? language,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(lease);
+        bool hasSymbolId = !string.IsNullOrWhiteSpace(symbolId);
+        bool hasQualifiedIdentity = !string.IsNullOrWhiteSpace(qualifiedIdentity);
+        if (hasSymbolId == hasQualifiedIdentity)
+        {
+            throw new ArgumentException("Exactly one symbol identity must be provided.", nameof(symbolId));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        DocumentCollectionSchema schema = _database.Documents.Catalog.TryGet(lease.DocumentCollectionName)
+            ?? throw new InvalidDataException("active_generation_document_collection_missing");
+        DocumentCollectionStore collection = _database.Documents.Open(lease.DocumentCollectionName);
+
+        string indexName;
+        string lookup;
+        string accessPath;
+        if (hasSymbolId)
+        {
+            indexName = "by_stable_id";
+            lookup = symbolId!;
+            accessPath = "document_path_index:by_stable_id";
+        }
+        else if (!string.IsNullOrWhiteSpace(language))
+        {
+            indexName = "by_stable_id";
+            lookup = StableId.CreateSymbol(lease.Manifest.WorkspaceId, language, qualifiedIdentity!);
+            accessPath = "document_path_index:by_stable_id:qualified_identity_language";
+        }
+        else
+        {
+            indexName = "by_qualified_identity";
+            lookup = qualifiedIdentity!;
+            accessPath = "document_path_index:by_qualified_identity";
+        }
+
+        DocumentPathIndex index = schema.TryGetIndex(indexName)
+            ?? throw new InvalidDataException("active_generation_symbol_index_missing");
+        IReadOnlyList<DocumentRow> rows = collection.GetByIndex(index, lookup, limit: 2);
+        cancellationToken.ThrowIfCancellationRequested();
+        IndexStorageDocument[] documents = rows
+            .Select(row => CoupletJsonSerializer.DeserializeIndexStorageDocument(row.Json))
+            .ToArray();
+        return new ActiveIndexSymbolQueryResult(
+            accessPath,
+            rows.Count,
+            rows.Count,
+            documents);
+    }
+
     internal DocumentCollectionStore GetActiveDocumentCollectionForTest(string workspaceId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1029,6 +1087,12 @@ internal sealed record ActiveIndexSearchResult(
     long Candidates,
     long Examined,
     IReadOnlyList<ActiveIndexSearchHit> Hits);
+
+internal sealed record ActiveIndexSymbolQueryResult(
+    string AccessPath,
+    long Candidates,
+    long Examined,
+    IReadOnlyList<IndexStorageDocument> Documents);
 
 internal enum IndexGenerationPublishFaultPoint
 {

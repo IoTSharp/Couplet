@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-C1 处于实现中，不是完成状态。CPL-010~012 已有可运行实现；CPL-013~015 在默认 `SonnetDB.Core 3.1.0` package lane 保留安全 staging，在显式 source lane 已接通最新 SonnetDB `Tsdb.Generations` 的 planning KV + Document + FullText 原子发布、active lease/cursor、重开、no-op、writer fence、lease/cutoff-aware cleanup、确定性提交边界故障重开、`workspace_status` 与 `code_search` exact/fulltext Preview 小型回归。`CG-007` 的选择性 cleanup API/接线缺口已关闭，`CG-005` 仍为 verifying；`symbol_get`、实时 watcher freshness、查询 cursor、fulltext filter plan、真实子进程 kill-before/after-publish 与容量门禁仍未完成。固定 package 的 Native AOT 继续受 `CG-006` 阻塞；source lane 使用已修复的 worker 生命周期，2026-08-29 win-x64 CLI publish/no-op smoke 已通过，但本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍待归档。
+C1 处于实现中，不是完成状态。CPL-010~012 已有可运行实现；CPL-013~015 在默认 `SonnetDB.Core 3.1.0` package lane 保留安全 staging，在显式 source lane 已接通最新 SonnetDB `Tsdb.Generations` 的 planning KV + Document + FullText 原子发布、active lease/cursor、重开、no-op、writer fence、lease/cutoff-aware cleanup、确定性提交边界故障重开、`workspace_status`、`code_search` exact/fulltext Preview 与 `symbol_get` 小型回归。`CG-007` 的选择性 cleanup API/接线缺口已关闭，`CG-005` 仍为 verifying；实时 watcher freshness、查询 cursor、fulltext filter plan、真实子进程 kill-before/after-publish 与容量门禁仍未完成。固定 package 的 Native AOT 继续受 `CG-006` 阻塞；source lane 使用已修复的 worker 生命周期，2026-08-29 win-x64 CLI publish/no-op smoke 已通过，但本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍待归档。
 
 2026-08-25 的真实 Medium/Large characterization 已完成，但 Correctness/Recovery 与 Performance/Capacity 两个独立门禁均为 **FAIL**。这些数据是缺口和优化输入，不是 C1 容量声明或完成证据。
 
@@ -16,7 +16,7 @@ C1 处于实现中，不是完成状态。CPL-010~012 已有可运行实现；CP
 | CPL-011 | replaceable `ILanguageAdapter`；C#、TypeScript/JavaScript lexical adapter `1.1.0` 固定为 `Partial` 与 `Inferred/0.9` 声明 confidence；unsupported/large file 为 `TextOnly`；版本化 fixture 覆盖同名、重载和 generic method 不支持边界 | adapter 能力可诊断，不宣称完整语义 |
 | CPL-012 | deterministic file/symbol/chunk IDs；qualified identity/signature；UTF-8 byte/line/column span；content hash、provenance、adapter version、confidence；三语言完整 golden snapshot | staging records 可追溯 |
 | CPL-013 | frozen snapshot；added/modified/deleted/content-hash rename；producer/branch rebuild；source runtime 从 active generation 读取轻量 planning snapshot 和真实 previous revision；无变化 no-op | 默认 package 仅 staging；source publish 可用；实时 watcher freshness 未接线 |
-| CPL-014 | generation collection；stable ID/path indexes；FullText；512-record batch；source lane 原子发布 planning KV + Document + FullText；`workspace_status` 与 exact/fulltext `code_search` per-request active lease | source `index-stage`、显式数据库 `workspace_status` 和 exact/fulltext Preview 可用；symbol/cursor 仍不可用 |
+| CPL-014 | generation collection；stable ID/path indexes；FullText；512-record batch；source lane 原子发布 planning KV + Document + FullText；`workspace_status`、exact/fulltext `code_search` 与 `symbol_get` per-request active lease | source `index-stage`、显式数据库 status/search/symbol 查询可用；query cursor 仍不可用 |
 | CPL-015 | parse/cancellation/marker/checkpoint/reopen；source publish/acquire、cursor revision、writer fence、lease/cutoff-aware cleanup；提交前/后故障与重开原子性；status 重开/selector fail closed | CG-007 API/接线已关闭；真实子进程 kill、查询 cursor continuity 未完成 |
 
 ## SonnetDB 接线
@@ -29,9 +29,9 @@ C1 处于实现中，不是完成状态。CPL-010~012 已有可运行实现；CP
 
 source lane MCP 在显式传入 `--workspace` 与 `--database` 后使用与 `index-stage` 相同的 workspace discovery identity，并由 `CoupletRuntime` 在完整 stdio host 生命周期内拥有 `SonnetDbIndexGenerationStore`。`workspace_status` 的每次调用只获取一个 active generation lease，从该 lease 的 planning KV、Document/FullText resource roles 读取同一 published planning/manifest snapshot；它校验 deterministic resource name、parent binding、Document schema、manifest identity/state/schema、checksum 形状和 planning identity，然后在响应完成后释放 lease。状态路径不打开 Document row scan、不重算 checksum、不执行 consistency repair 或 rebuild；source-generated `McpToolResponse<WorkspaceStatusItem>` 是唯一成功 JSON 路径。空 stream 返回 `index_not_ready`，旧 revision selector 返回当前 active 的 `stale_revision`，metadata/schema 异常统一返回不含绝对路径的 `index_corrupt`。
 
-`code_search` 每次调用同样持有单一 active generation lease，并从该 lease 冻结的 collection/index 名称执行查询。exact 只按 stable ID 命中 `by_stable_id` path index；fulltext 命中 `code_search` FullText index 并逐项回读同一 generation Document。响应使用 source-generated `McpToolResponse<CodeSearchItem>`，携带 evidence、实际 access path、candidates/examined/returned、预算消耗和显式截断。当前 cursor、fulltext path/language/kind filter 与 `symbol_get` 仍返回稳定 capability limitation；默认 package lane 不读取 staging。
+`code_search` 每次调用同样持有单一 active generation lease，并从该 lease 冻结的 collection/index 名称执行查询。exact 只按 stable ID 命中 `by_stable_id` path index；fulltext 命中 `code_search` FullText index 并逐项回读同一 generation Document。`symbol_get` 的 stable ID 与带 language qualified identity 走唯一 `by_stable_id`，不带 language 的 qualified identity 走 `by_qualified_identity` 且最多取两条用于歧义检测。响应使用 source-generated typed DTO，携带 evidence、实际 access path、candidates/examined/returned、预算消耗和显式截断；symbol 歧义、非 symbol ID 与不完整记录 fail closed。当前 cursor 与 fulltext path/language/kind filter 仍返回稳定 capability limitation；默认 package lane 不读取 staging。
 
-MCP initialize 时发现的 source revision 与 database bytes 各采样一次；`workspace_status.freshness.reason=source_revision_sampled_at_mcp_startup`，diagnostics 的 fallback reason 同时标明 source/database snapshot 边界，`RebuildRequired` 只表示 active manifest 是否匹配 initialize 时的 source revision，不宣称调用时工作树实时 current。status 仍报告 CG-005，不再报告已关闭的 CG-007；source exact/fulltext capability 为 `preview/active_generation_query_connected`，`symbol_get` 与 C2/C3 工具继续走原 capability gate。默认 package lane 和 source lane 缺少 `--database` 时的既有 unavailable 行为不变。固定 package Native AOT 继续禁用不兼容 worker并报告 CG-006；source lane 保留最新 SonnetDB 默认 worker，使用 Core 已验证的 AOT-safe shutdown。
+MCP initialize 时发现的 source revision 与 database bytes 各采样一次；`workspace_status.freshness.reason=source_revision_sampled_at_mcp_startup`，diagnostics 的 fallback reason 同时标明 source/database snapshot 边界，`RebuildRequired` 只表示 active manifest 是否匹配 initialize 时的 source revision，不宣称调用时工作树实时 current。status 仍报告 CG-005，不再报告已关闭的 CG-007；source exact/fulltext capability 为 `preview/active_generation_query_connected`，并覆盖 `symbol_get`；C2/C3 工具继续走原 capability gate。默认 package lane 和 source lane 缺少 `--database` 时的既有 unavailable 行为不变。固定 package Native AOT 继续禁用不兼容 worker并报告 CG-006；source lane 保留最新 SonnetDB 默认 worker，使用 Core 已验证的 AOT-safe shutdown。
 
 ## 验证命令
 
@@ -64,15 +64,15 @@ dotnet publish src/Couplet.McpServer/Couplet.McpServer.csproj -c Release -r win-
 
 2026-08-30 增加 CG-007 cutoff cleanup 接线与 `couplet.index_stage.v2`。最终复核结果为 source Release build 0 warning/0 error、source lane 全量 89/89 PASS、默认 package lane 全量 62/62 PASS；source retention/wire 定向测试 12/12 PASS，default v1 wire 测试 1/1 PASS。v1 schema/payload 保持冻结。该结果关闭 API/接线缺口，但尚未重跑固定硬件 Medium/Large 或 7 天增长，不改变 C1 双门禁 FAIL。
 
-2026-08-30 增加 source `code_search` exact/fulltext active-lease Preview 首切片。最终复核结果为 source Release build 0 warning/0 error、source lane 全量 90/90 PASS，默认 package Release build 0 warning/0 error、默认 lane 62/62 PASS。该结果只关闭首批 active query 接线；`symbol_get`、query cursor、fulltext filter plan、真实双客户端与固定硬件/长稳门禁仍未完成，CG-005 和 C1 双门禁保持原状态。
+2026-08-30 增加 source `code_search` exact/fulltext active-lease Preview 首切片并随后接入 `symbol_get` stable/qualified identity 有界索引查询。最终复核结果为 source Release build 0 warning/0 error、source lane 全量 92/92 PASS，默认 package Release build 0 warning/0 error、默认 lane 62/62 PASS。query cursor、fulltext filter plan、真实双客户端与固定硬件/长稳门禁仍未完成，CG-005 和 C1 双门禁保持原状态。
 
 Medium/Large 容量运行使用固定 manifest `38f906b9b65f88e11bb2953fa2ee45e97105815c13d6b8a364230da1ee9fb1b4`。Medium（1m LOC / 100k symbols）initial 74.814 s，100-file 73.086 s，peak RSS 4.648 GiB；Large（10m LOC / 1m symbols）initial 3,261.419 s，100-file 6,472.504 s，peak RSS 28.329 GiB。Large initial、两档增量和两档内存均未达目标；详细语料 hash、P50/P95/P99、allocation、reopen 与数据库放大见 [C1 Medium/Large 容量证据](c1-capacity-evidence.md)。
 
 ## 未通过门禁
 
-- Correctness/Recovery：**FAIL**。source runtime 已从 active planning snapshot 构造 plan，并实现 publish/no-op/reopen、writer fence、lease/cursor/cutoff cleanup、确定性提交边界故障重开、`workspace_status` 与 exact/fulltext `code_search` active-lease 回归；仍缺真实子进程 kill-before/after-publish、`symbol_get`、query cursor、fulltext filter plan、实时 watcher freshness 和 branch-switch 查询语义。
+- Correctness/Recovery：**FAIL**。source runtime 已从 active planning snapshot 构造 plan，并实现 publish/no-op/reopen、writer fence、lease/cursor/cutoff cleanup、确定性提交边界故障重开、`workspace_status`、exact/fulltext `code_search` 与 `symbol_get` active-lease 回归；仍缺真实子进程 kill-before/after-publish、query cursor、fulltext filter plan、实时 watcher freshness 和 branch-switch 查询语义。
 - Performance/Capacity：**FAIL**。Medium/Large 已有固定语料实测；Large initial、两档 100-file 路径和两档 peak RSS 未达门禁，initial/incremental/reopen 昂贵路径只有单样本，I/O 与 FullText candidates/examined 诊断也不完整。
 - Native AOT lifecycle：默认 3.1.0 package 仍关闭不兼容 worker并报告 CG-006；2026-08-29 source win-x64 CLI publish/no-op smoke 已通过，本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍未归档。
-- 双客户端合同：Codex/Claude Code 的能力门控已验证；source lane `workspace_status` 与 fulltext `code_search` 已有 stdio typed 成功回归，但尚无真实双客户端发布后会话证据，`symbol_get` 和 query cursor 仍 unavailable。
+- 双客户端合同：Codex/Claude Code 的能力门控已验证；source lane `workspace_status`、fulltext `code_search` 与 `symbol_get` 已有 stdio typed 成功回归，但尚无真实双客户端发布后会话证据，query cursor 仍 unavailable。
 
 关闭 C1 还需完成 Couplet 真实进程 crash/recovery、并发协调、MCP cursor/lease、删除/重命名/branch switch、固定硬件容量和 7 天增长联合回归。不得以应用层第二提交日志、直接查询 package staging、吞 dispose 异常或隐藏 maintenance 状态绕过。

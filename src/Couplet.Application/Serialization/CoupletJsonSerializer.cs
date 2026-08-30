@@ -79,6 +79,14 @@ public static class CoupletJsonSerializer
         SerializeCore(response, CoupletJsonContext.Default.McpToolResponseCodeSearchItem);
 
     /// <summary>
+    /// 序列化 symbol details typed MCP 响应。
+    /// </summary>
+    /// <param name="response">symbol details 响应。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(McpToolResponse<SymbolDetailsItem> response) =>
+        SerializeCore(response, CoupletJsonContext.Default.McpToolResponseSymbolDetailsItem);
+
+    /// <summary>
     /// 序列化 C0 evidence 报告。
     /// </summary>
     /// <param name="report">evidence 报告。</param>

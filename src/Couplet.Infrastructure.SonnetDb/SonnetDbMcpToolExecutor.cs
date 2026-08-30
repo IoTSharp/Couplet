@@ -87,6 +87,15 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                     stopwatch,
                     correlationId,
                     cancellationToken),
+                SymbolGetRequest symbol => ExecuteSymbolGet(
+                    symbol,
+                    binding,
+                    activeBinding,
+                    lease,
+                    manifest,
+                    stopwatch,
+                    correlationId,
+                    cancellationToken),
                 _ => Error(
                     McpErrorCodes.CapabilityUnavailable,
                     "active_query_tool_not_connected",
@@ -396,6 +405,223 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
         }
     }
 
+    private McpDispatchResult ExecuteSymbolGet(
+        SymbolGetRequest request,
+        WorkspaceBinding binding,
+        WorkspaceBinding activeBinding,
+        ActiveIndexQueryLease lease,
+        GenerationManifest manifest,
+        Stopwatch stopwatch,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        if (request.Cursor is not null)
+        {
+            return Error(
+                McpErrorCodes.CapabilityUnavailable,
+                "query_cursor_not_connected",
+                true,
+                activeBinding,
+                correlationId,
+                "workspace.index",
+                "CG-005");
+        }
+
+        ActiveIndexSymbolQueryResult query = _store.QueryActiveSymbol(
+            lease,
+            request.SymbolId,
+            request.QualifiedIdentity,
+            request.Language,
+            cancellationToken);
+        if (stopwatch.Elapsed.TotalMilliseconds >= request.Budget.DeadlineMs)
+        {
+            return Error(
+                McpErrorCodes.DeadlineExceeded,
+                "request_deadline_reached",
+                true,
+                activeBinding,
+                correlationId);
+        }
+
+        foreach (IndexStorageDocument document in query.Documents)
+        {
+            ValidateDocumentIdentity(document, manifest);
+            if (document.RecordType != IndexStorageRecordType.Symbol)
+            {
+                if (request.SymbolId is not null)
+                {
+                    return Error(
+                        McpErrorCodes.InvalidRequest,
+                        "symbol_id_not_symbol",
+                        false,
+                        activeBinding,
+                        correlationId);
+                }
+
+                throw new InvalidDataException("active_generation_symbol_index_contains_non_symbol");
+            }
+
+            ValidateSymbolDocument(document);
+        }
+
+        if (request.QualifiedIdentity is not null
+            && request.Language is null
+            && query.Documents.Count > 1)
+        {
+            return Error(
+                McpErrorCodes.InvalidRequest,
+                "qualified_identity_ambiguous",
+                false,
+                activeBinding,
+                correlationId);
+        }
+
+        IndexStorageDocument? match = query.Documents.SingleOrDefault();
+        if (match is not null
+            && request.Language is not null
+            && !string.Equals(match.Language, request.Language, StringComparison.OrdinalIgnoreCase))
+        {
+            match = null;
+        }
+
+        if (match is not null
+            && request.QualifiedIdentity is not null
+            && !string.Equals(
+                match.QualifiedIdentity!.Normalize(),
+                request.QualifiedIdentity.Normalize(),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("active_generation_symbol_identity_mismatch");
+        }
+
+        string evidenceId = match is null ? string.Empty : "source:" + match.StableId;
+        IReadOnlyList<SymbolDetailsItem> items = match is null
+            ? []
+            :
+            [
+                new SymbolDetailsItem
+                {
+                    Id = match.StableId,
+                    Kind = match.EntityKind!.Value,
+                    QualifiedIdentity = match.QualifiedIdentity!,
+                    Signature = match.Signature!,
+                    ContainerId = match.ContainerId,
+                    Language = match.Language,
+                    Confidence = match.Confidence!,
+                    EvidenceIds = [evidenceId],
+                },
+            ];
+        IReadOnlyList<Evidence> evidence = match is null
+            ? []
+            :
+            [
+                new Evidence
+                {
+                    Id = evidenceId,
+                    Kind = "symbol",
+                    Span = match.Span,
+                    SymbolId = match.StableId,
+                    RelationId = null,
+                    SourceRevision = match.SourceRevision,
+                    IndexRevision = match.IndexRevision,
+                },
+            ];
+
+        bool sourceCurrent = string.Equals(
+            binding.SourceRevision,
+            manifest.SourceRevision,
+            StringComparison.Ordinal);
+        BeforeResponseSerializationTestHook?.Invoke();
+        int consumedBytes = 0;
+        int consumedTokens = 0;
+        int finalBytes = 0;
+        int finalTokens = 0;
+        double reportedElapsedMilliseconds = Math.Round(
+            stopwatch.Elapsed.TotalMilliseconds,
+            3,
+            MidpointRounding.AwayFromZero);
+        string responseJson = string.Empty;
+        McpToolResponse<SymbolDetailsItem> response = CreateSymbolDetailsResponse(
+            binding,
+            manifest,
+            items,
+            evidence,
+            query,
+            sourceCurrent,
+            reportedElapsedMilliseconds,
+            consumedTokens,
+            consumedBytes);
+        for (int iteration = 0; iteration < 8; iteration++)
+        {
+            double serializationStartedAt = stopwatch.Elapsed.TotalMilliseconds;
+            response = CreateSymbolDetailsResponse(
+                binding,
+                manifest,
+                items,
+                evidence,
+                query,
+                sourceCurrent,
+                reportedElapsedMilliseconds,
+                consumedTokens,
+                consumedBytes);
+            responseJson = CoupletJsonSerializer.Serialize(response);
+            finalBytes = Encoding.UTF8.GetByteCount(responseJson);
+            finalTokens = (finalBytes + 3) / 4;
+            double serializationCompletedAt = stopwatch.Elapsed.TotalMilliseconds;
+            bool payloadStable = finalBytes == consumedBytes && finalTokens == consumedTokens;
+            bool elapsedClose = Math.Abs(serializationCompletedAt - reportedElapsedMilliseconds) <= 0.25;
+            if (payloadStable && elapsedClose)
+            {
+                break;
+            }
+
+            consumedBytes = finalBytes;
+            consumedTokens = finalTokens;
+            double serializationDuration = serializationCompletedAt - serializationStartedAt;
+            reportedElapsedMilliseconds = Math.Round(
+                serializationCompletedAt + serializationDuration,
+                3,
+                MidpointRounding.AwayFromZero);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        if (stopwatch.Elapsed.TotalMilliseconds >= request.Budget.DeadlineMs)
+        {
+            return Error(
+                McpErrorCodes.DeadlineExceeded,
+                "request_deadline_reached",
+                true,
+                activeBinding,
+                correlationId);
+        }
+
+        if (finalBytes > request.Budget.MaxBytes || finalTokens > request.Budget.MaxTokens)
+        {
+            return Error(
+                McpErrorCodes.BudgetExhausted,
+                "no_budget_for_reliable_item",
+                true,
+                activeBinding,
+                correlationId);
+        }
+
+        stopwatch.Stop();
+        return McpDispatchResult.FromSymbolDetails(response, responseJson);
+    }
+
+    private static void ValidateSymbolDocument(IndexStorageDocument document)
+    {
+        if (document.EntityKind is null
+            || string.IsNullOrWhiteSpace(document.QualifiedIdentity)
+            || string.IsNullOrWhiteSpace(document.Signature)
+            || string.IsNullOrWhiteSpace(document.Language)
+            || document.Confidence is null
+            || document.Span is null)
+        {
+            throw new InvalidDataException("active_generation_symbol_document_invalid");
+        }
+    }
+
     private static bool MatchesFilters(
         IndexStorageDocument document,
         CodeSearchRequest search)
@@ -542,6 +768,55 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
             },
             Truncated = truncated,
             TruncationReason = truncationReason,
+            NextCursor = null,
+        };
+
+    private static McpToolResponse<SymbolDetailsItem> CreateSymbolDetailsResponse(
+        WorkspaceBinding binding,
+        GenerationManifest manifest,
+        IReadOnlyList<SymbolDetailsItem> items,
+        IReadOnlyList<Evidence> evidence,
+        ActiveIndexSymbolQueryResult query,
+        bool sourceCurrent,
+        double elapsedMilliseconds,
+        int consumedTokens,
+        int consumedBytes) => new()
+        {
+            WorkspaceId = manifest.WorkspaceId,
+            SourceRevision = manifest.SourceRevision,
+            IndexRevision = manifest.IndexRevision,
+            Freshness = new Freshness
+            {
+                SourceState = sourceCurrent
+                    ? SourceState(binding.SourceRevision)
+                    : "unknown",
+                IndexState = sourceCurrent ? "current" : "stale",
+                Coverage = sourceCurrent ? 1 : 0,
+                PendingFiles = 0,
+                FailedFiles = 0,
+                Reason = "source_revision_sampled_at_mcp_startup",
+            },
+            Capabilities = McpWorkspaceBinder.CreateC1Capabilities()
+                .Where(capability => capability.Id == "exact")
+                .ToArray(),
+            Items = items,
+            Evidence = evidence,
+            Diagnostics = new QueryDiagnostics
+            {
+                AccessPath = "generation_active_lease:" + query.AccessPath,
+                Candidates = query.Candidates,
+                Examined = query.Examined,
+                Returned = items.Count,
+                ExpandedEdges = 0,
+                FrontierPeak = 0,
+                FallbackReason = null,
+                ElapsedMs = elapsedMilliseconds,
+                ConsumedItems = items.Count,
+                ConsumedTokens = consumedTokens,
+                ConsumedBytes = consumedBytes,
+            },
+            Truncated = false,
+            TruncationReason = null,
             NextCursor = null,
         };
 

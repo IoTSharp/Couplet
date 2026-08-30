@@ -72,7 +72,7 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 |---|---|---|---|---|---|
 | `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext、真实 fault/capacity 未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status` 与 exact/fulltext `code_search` Preview、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库开放 `workspace_status` 和 exact/fulltext 首切片；symbol/cursor、C2/C3 工具仍 unavailable |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview 与 `symbol_get`、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；query cursor、C2/C3 工具仍 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：

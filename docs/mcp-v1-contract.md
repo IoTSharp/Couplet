@@ -49,7 +49,7 @@ MCP Server 启动时必须用 `--workspace <path-or-id>` 或等价显式配置�
 
 不得触发隐式全量重建或 Document 全表扫描。客户端可据此决定等待、提示用户或只使用已验证能力。
 
-当前 source lane 在 MCP 启动时显式绑定 `--workspace` 与 `--database` 后开放该工具：每次调用持有一个 active generation lease，只读取同一 planning/manifest snapshot，并以 source-generated typed DTO 返回。`source_revision` 与 `database_bytes` 是 initialize/startup 时的采样值，不是调用时实时工作树扫描；`freshness.reason` 与 diagnostics 必须显式说明该边界，`rebuild_required` 只相对 initialize snapshot 判断。source lane 的 exact/fulltext capability 已随 `code_search` 首切片升为 Preview；`symbol_get` 仍 unavailable。成功 status 继续报告尚未关闭的 CG-005，不再报告已关闭的 CG-007。
+当前 source lane 在 MCP 启动时显式绑定 `--workspace` 与 `--database` 后开放该工具：每次调用持有一个 active generation lease，只读取同一 planning/manifest snapshot，并以 source-generated typed DTO 返回。`source_revision` 与 `database_bytes` 是 initialize/startup 时的采样值，不是调用时实时工作树扫描；`freshness.reason` 与 diagnostics 必须显式说明该边界，`rebuild_required` 只相对 initialize snapshot 判断。source lane 的 exact/fulltext capability 已随 `code_search` 与 `symbol_get` 接线升为 Preview。成功 status 继续报告尚未关闭的 CG-005，不再报告已关闭的 CG-007。
 
 ### `code_search`
 
@@ -63,7 +63,7 @@ MCP Server 启动时必须用 `--workspace <path-or-id>` 或等价显式配置�
 
 ### `symbol_get`
 
-按 stable symbol ID 或 unambiguous qualified identity 返回 kind、signature、container、definition、declarations、documentation、language、source span 和 confidence。名称歧义返回候选，不自行猜选。
+按 stable symbol ID 或 unambiguous qualified identity 返回 kind、signature、container、language、source evidence 和 confidence。source lane 每次请求持有 active generation lease：stable ID 走唯一 `by_stable_id`；qualified identity + language 由稳定 ID 派生后走同一唯一索引；qualified identity 未带 language 时只从 `by_qualified_identity` 读取至多两条，第二条即以 `invalid_request/qualified_identity_ambiguous` fail closed，不自行猜选。stable ID 指向非 symbol、cursor 尚未接线或索引记录缺少 symbol 必需字段时同样 fail closed；不存在或 language 不匹配返回空 items。所有成功响应使用 source-generated typed DTO，携带 revision/source span evidence、实际 access path、候选/检查/返回计数及预算消耗，不使用 Document 全扫。
 
 ### `symbol_relations`
 

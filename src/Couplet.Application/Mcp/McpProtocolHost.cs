@@ -252,6 +252,15 @@ public sealed class McpProtocolHost
                 serializedCodeSearch);
         }
 
+        if (result.SymbolDetails is { } symbolDetails
+            && result.SerializedSymbolDetails is { } serializedSymbolDetails)
+        {
+            return WriteToolSuccess(
+                id,
+                symbolDetails,
+                serializedSymbolDetails);
+        }
+
         return WriteToolError(id, new McpError
         {
             Code = McpErrorCodes.InternalError,

@@ -25,6 +25,12 @@ public sealed class McpDispatchResult
     /// <summary>获取在 active generation lease 内冻结的 code search JSON；其他结果或失败时为空。</summary>
     public string? SerializedCodeSearch { get; init; }
 
+    /// <summary>获取 symbol details 成功响应；其他结果或失败时为空。</summary>
+    public McpToolResponse<SymbolDetailsItem>? SymbolDetails { get; init; }
+
+    /// <summary>获取在 active generation lease 内冻结的 symbol details JSON；其他结果或失败时为空。</summary>
+    public string? SerializedSymbolDetails { get; init; }
+
     /// <summary>
     /// 创建稳定错误结果。
     /// </summary>
@@ -73,6 +79,26 @@ public sealed class McpDispatchResult
             Error = null,
             CodeSearch = response,
             SerializedCodeSearch = serializedResponse,
+        };
+    }
+
+    /// <summary>
+    /// 创建 symbol details typed 成功结果。
+    /// </summary>
+    /// <param name="response">typed 成功响应。</param>
+    /// <param name="serializedResponse">在 active generation lease 内完成的 source-generated JSON。</param>
+    /// <returns>成功结果。</returns>
+    public static McpDispatchResult FromSymbolDetails(
+        McpToolResponse<SymbolDetailsItem> response,
+        string serializedResponse)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serializedResponse);
+        return new McpDispatchResult
+        {
+            Error = null,
+            SymbolDetails = response,
+            SerializedSymbolDetails = serializedResponse,
         };
     }
 }
@@ -164,7 +190,8 @@ public static class McpToolContractDispatcher
 
         bool canExecute = executor is not null
             && (request is WorkspaceStatusRequest
-                || request is CodeSearchRequest { Mode: "exact" or "fulltext" });
+                || request is CodeSearchRequest { Mode: "exact" or "fulltext" }
+                || request is SymbolGetRequest);
         bool deferRevisionAvailability = canExecute;
         McpError? commonError = McpRequestValidator.Validate(
             request,
@@ -294,11 +321,6 @@ public static class McpToolContractDispatcher
         if (capabilities is null)
         {
             return gate;
-        }
-
-        if (request is SymbolGetRequest)
-        {
-            return ("workspace.index", "active_query_tool_not_connected", "CG-005");
         }
 
         (string Id, string Capability, string Gap)? declaredGate = request switch
