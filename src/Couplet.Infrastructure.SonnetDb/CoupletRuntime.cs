@@ -1,11 +1,13 @@
 using Couplet.Application.Capabilities;
 using Couplet.Application.Hosting;
 using Couplet.Application.Indexing;
+using Couplet.Application.Mcp;
 using Couplet.Application.Serialization;
 using Couplet.Application.Workspaces;
 using Couplet.Core.Capabilities;
 using Couplet.Core.Evaluation;
 using Couplet.Core.Indexing;
+using Couplet.Core.Mcp;
 using Couplet.Core.Workspaces;
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
 using SonnetDB.Generations;
@@ -42,6 +44,20 @@ public static class CoupletRuntime
                 return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
             }
         }
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        else if (component == ComponentKind.McpServer
+            && arguments.Count > 0
+            && string.Equals(arguments[0], "serve", StringComparison.OrdinalIgnoreCase)
+            && Option(arguments, "--database") is not null)
+        {
+            return RunMcpServerAsync(
+                arguments,
+                TextReader.Null,
+                output,
+                error,
+                cancellationToken);
+        }
+#endif
 
         var probe = new SonnetDbCapabilityProbe();
         var reportService = new CapabilityReportService(probe);
@@ -75,6 +91,15 @@ public static class CoupletRuntime
                 return RunIndexCommandAsync(command, arguments, output, error, cancellationToken);
             }
         }
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+        else if (component == ComponentKind.McpServer
+            && arguments.Count > 0
+            && string.Equals(arguments[0], "serve", StringComparison.OrdinalIgnoreCase)
+            && Option(arguments, "--database") is not null)
+        {
+            return RunMcpServerAsync(arguments, input, output, error, cancellationToken);
+        }
+#endif
 
         var probe = new SonnetDbCapabilityProbe();
         var reportService = new CapabilityReportService(probe);
@@ -162,6 +187,15 @@ public static class CoupletRuntime
                 return await WriteIndexErrorAsync(error, "explicit_database_required").ConfigureAwait(false);
             }
 
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+            if (!TryGetRetiredGenerationRetention(arguments, out TimeSpan retiredGenerationRetention))
+            {
+                return await WriteIndexErrorAsync(
+                    error,
+                    "invalid_retired_generation_retention").ConfigureAwait(false);
+            }
+#endif
+
             using IndexWriterFence writerFence = await IndexWriterFence.AcquireAsync(
                 databasePath,
                 workspace.Result.WorkspaceId,
@@ -179,8 +213,10 @@ public static class CoupletRuntime
                 throw new InvalidDataException("workspace_identity_changed_while_waiting_for_writer");
             }
 
-            using var store = new SonnetDbIndexGenerationStore(databasePath);
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+            using var store = new SonnetDbIndexGenerationStore(
+                databasePath,
+                retiredGenerationRetention);
             ActiveIndexPlanningSnapshot? active = store.ReadActivePlanningSnapshot(
                 workspace.Result.WorkspaceId);
             WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
@@ -196,6 +232,7 @@ public static class CoupletRuntime
                 active?.DatabaseGenerationRevision ?? 0,
                 cancellationToken);
 #else
+            using var store = new SonnetDbIndexGenerationStore(databasePath);
             WorkspaceIndexSnapshot snapshot = await IndexSnapshotBuilder.BuildAsync(
                 workspace,
                 previousIndexRevision: null,
@@ -225,6 +262,113 @@ public static class CoupletRuntime
         }
 #endif
     }
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static async Task<int> RunMcpServerAsync(
+        IReadOnlyList<string> arguments,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        string? workspacePath = Option(arguments, "--workspace");
+        string? databasePath = Option(arguments, "--database");
+        if (workspacePath is null || databasePath is null)
+        {
+            return await WriteMcpStartupErrorAsync(
+                error,
+                McpErrorCodes.InvalidRequest,
+                workspacePath is null ? "explicit_workspace_required" : "explicit_database_required",
+                retryable: false).ConfigureAwait(false);
+        }
+
+        try
+        {
+            DiscoveredWorkspace workspace = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspacePath,
+                CreatePolicy(arguments),
+                cancellationToken).ConfigureAwait(false);
+            using var store = new SonnetDbIndexGenerationStore(databasePath);
+
+            string? activeIndexRevision = null;
+            WorkspaceDatabaseState databaseState = WorkspaceDatabaseState.Empty;
+            try
+            {
+                using DatabaseGenerationQueryLease lease = store.AcquireActiveGeneration(
+                    workspace.Result.WorkspaceId);
+                activeIndexRevision = lease.Generation.GenerationId;
+                databaseState = WorkspaceDatabaseState.Current;
+            }
+            catch (DatabaseGenerationException exception)
+                when (exception.Code == DatabaseGenerationErrorCodes.NoActiveGeneration)
+            {
+                // Empty is a valid server state; workspace_status reports index_not_ready.
+            }
+
+            var binding = new Couplet.Core.Mcp.WorkspaceBinding
+            {
+                WorkspaceId = workspace.Result.WorkspaceId,
+                RepositoryIdentity = workspace.Result.RepositoryIdentity,
+                SourceRevision = workspace.Result.SourceRevision,
+                IndexRevision = activeIndexRevision,
+            };
+            long databaseBytesAtStartup = SonnetDbMcpToolExecutor.SampleDatabaseBytes(
+                databasePath,
+                cancellationToken);
+            var executor = new SonnetDbMcpToolExecutor(store, databaseBytesAtStartup);
+            var host = new McpProtocolHost(
+                binding,
+                executor,
+                databaseState,
+                McpWorkspaceBinder.CreateC1Capabilities());
+            await host.RunAsync(input, output, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return await WriteMcpStartupErrorAsync(
+                error,
+                McpErrorCodes.Cancelled,
+                "mcp_startup_cancelled",
+                retryable: false).ConfigureAwait(false);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return await WriteMcpStartupErrorAsync(
+                error,
+                McpErrorCodes.WorkspaceNotFound,
+                "configured_workspace_not_found",
+                retryable: false).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or OverflowException
+            or DatabaseGenerationException)
+        {
+            return await WriteMcpStartupErrorAsync(
+                error,
+                McpErrorCodes.IndexCorrupt,
+                "database_open_or_generation_read_failed",
+                retryable: true).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<int> WriteMcpStartupErrorAsync(
+        TextWriter error,
+        string code,
+        string reason,
+        bool retryable)
+    {
+        await error.WriteLineAsync(CoupletJsonSerializer.Serialize(new Couplet.Core.Mcp.McpError
+        {
+            Code = code,
+            Reason = reason,
+            Retryable = retryable,
+            CorrelationId = "startup",
+        })).ConfigureAwait(false);
+        return code == McpErrorCodes.InvalidRequest ? 64 : 2;
+    }
+#endif
 
     private static async Task<int> RunC1CapacityAsync(
         IReadOnlyList<string> arguments,
@@ -327,6 +471,44 @@ public static class CoupletRuntime
 
         return values;
     }
+
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static bool TryGetRetiredGenerationRetention(
+        IReadOnlyList<string> arguments,
+        out TimeSpan retention)
+    {
+        retention = TimeSpan.Zero;
+        bool found = false;
+        for (int index = 1; index < arguments.Count; index++)
+        {
+            if (!string.Equals(
+                    arguments[index],
+                    "--retired-generation-retention",
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (found || index == arguments.Count - 1)
+            {
+                return false;
+            }
+
+            found = true;
+            if (!TimeSpan.TryParseExact(
+                    arguments[++index],
+                    "c",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out retention)
+                || retention < TimeSpan.Zero)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+#endif
 
     private static async Task<int> WriteIndexErrorAsync(TextWriter error, string reason)
     {

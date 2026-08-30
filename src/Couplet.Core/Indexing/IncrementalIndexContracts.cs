@@ -178,6 +178,11 @@ public sealed class IndexStageReport
     public IReadOnlyList<long> RemovedGenerationRevisions { get; init; } = [];
     /// <summary>获取因查询租约仍存活而延后清理的 database generation revisions。</summary>
     public IReadOnlyList<long> DeferredGenerationRevisions { get; init; } = [];
+    /// <summary>获取因尚未达到 retention cutoff 而延后清理的 database generation revisions。</summary>
+#if !COUPLET_SONNETDB_SOURCE_GENERATIONS
+    [JsonIgnore]
+#endif
+    public IReadOnlyList<long> RetentionDeferredGenerationRevisions { get; init; } = [];
     /// <summary>获取不影响本次 staging 完整性但限制运行模式的稳定能力说明。</summary>
     public IReadOnlyList<string> Limitations { get; init; } = [];
     /// <summary>获取稳定排序的问题码。</summary>

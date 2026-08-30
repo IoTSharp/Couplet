@@ -21,6 +21,7 @@ $requiredFiles = @(
     'contracts/c0-handshake.v1.json',
     'contracts/code-graph/v1/schema.json',
     'contracts/indexing/v1/schema.json',
+    'contracts/indexing/v2/stage-report.schema.json',
     'contracts/mcp/v1/schema-catalog.json',
     'contracts/security/v1/policy.schema.json',
     'fixtures/c0/manifest.v1.json',

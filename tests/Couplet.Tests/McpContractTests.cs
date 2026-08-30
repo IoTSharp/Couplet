@@ -146,11 +146,13 @@ public sealed class McpContractTests
             "request-1",
             CancellationToken.None);
 
-        Assert.Equal(McpErrorCodes.CapabilityUnavailable, first.Error.Code);
-        Assert.Equal("generation_publish_blocked", first.Error.Reason);
-        Assert.Equal(first.Error.Code, second.Error.Code);
-        Assert.Equal(first.Error.Reason, second.Error.Reason);
-        Assert.Equal(first.Error.GapId, second.Error.GapId);
+        McpError firstError = Assert.IsType<McpError>(first.Error);
+        McpError secondError = Assert.IsType<McpError>(second.Error);
+        Assert.Equal(McpErrorCodes.CapabilityUnavailable, firstError.Code);
+        Assert.Equal("generation_publish_blocked", firstError.Reason);
+        Assert.Equal(firstError.Code, secondError.Code);
+        Assert.Equal(firstError.Reason, secondError.Reason);
+        Assert.Equal(firstError.GapId, secondError.GapId);
     }
 
     [Fact]
@@ -167,8 +169,9 @@ public sealed class McpContractTests
             "request-2",
             CancellationToken.None);
 
-        Assert.Equal(McpErrorCodes.InvalidRequest, result.Error.Code);
-        Assert.Equal("request_schema_mismatch", result.Error.Reason);
+        McpError error = Assert.IsType<McpError>(result.Error);
+        Assert.Equal(McpErrorCodes.InvalidRequest, error.Code);
+        Assert.Equal("request_schema_mismatch", error.Reason);
     }
 
     [Fact]
@@ -185,7 +188,9 @@ public sealed class McpContractTests
             "request-3",
             CancellationToken.None);
 
-        Assert.Equal(McpErrorCodes.ProviderUnavailable, result.Error.Code);
+        Assert.Equal(
+            McpErrorCodes.ProviderUnavailable,
+            Assert.IsType<McpError>(result.Error).Code);
     }
 
     [Fact]

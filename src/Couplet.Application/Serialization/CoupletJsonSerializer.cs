@@ -63,6 +63,14 @@ public static class CoupletJsonSerializer
         SerializeCore(response, CoupletJsonContext.Default.InitializeWorkspaceResponse);
 
     /// <summary>
+    /// 序列化 workspace status typed MCP 响应。
+    /// </summary>
+    /// <param name="response">workspace status 响应。</param>
+    /// <returns>JSON 文本。</returns>
+    public static string Serialize(McpToolResponse<WorkspaceStatusItem> response) =>
+        SerializeCore(response, CoupletJsonContext.Default.McpToolResponseWorkspaceStatusItem);
+
+    /// <summary>
     /// 序列化 C0 evidence 报告。
     /// </summary>
     /// <param name="report">evidence 报告。</param>

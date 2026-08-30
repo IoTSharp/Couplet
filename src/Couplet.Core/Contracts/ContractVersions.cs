@@ -68,7 +68,11 @@ public static class ContractVersions
     /// <summary>
     /// 获取 C1 index staging 报告合同版本。
     /// </summary>
+#if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    public const string IndexStage = "couplet.index_stage.v2";
+#else
     public const string IndexStage = "couplet.index_stage.v1";
+#endif
 
     /// <summary>
     /// 获取 C1 staging generation 重开检查合同版本。

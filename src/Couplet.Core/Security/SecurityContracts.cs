@@ -20,7 +20,7 @@ public enum ProviderMode
 /// </summary>
 public sealed class DataLifecyclePolicy
 {
-    /// <summary>获取 retired generation 最长保留时间。</summary>
+    /// <summary>获取 retired generation 从发布时间起算、达到后具备清理资格的时长。</summary>
     public required TimeSpan RetiredGenerationRetention { get; init; }
     /// <summary>获取日志最长保留时间。</summary>
     public required TimeSpan LogRetention { get; init; }

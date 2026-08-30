@@ -272,6 +272,224 @@ public sealed class C1GenerationPublishingTests
         }
     }
 
+    [Fact]
+    public async Task StageAndPublish_FaultBeforeCommit_AfterReopenKeepsPreviousGenerationAndCanRetry()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            string sourcePath = Path.Combine(workspaceRoot, "Sample.cs");
+            await File.WriteAllTextAsync(
+                sourcePath,
+                "public class Sample { public int Original() => 1; }");
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspaceRoot,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot firstSnapshot = await IndexSnapshotBuilder.BuildAsync(discovered, null);
+            IncrementalIndexPlan firstPlan = IncrementalIndexPlanner.Plan(null, firstSnapshot);
+            WorkspaceIndexSnapshot secondSnapshot;
+            IncrementalIndexPlan secondPlan;
+
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                IndexStageReport first = store.StageAndPublish(firstSnapshot, firstPlan, 0);
+                Assert.True(first.Published);
+                Assert.Equal(1, first.DatabaseGenerationRevision);
+
+                await File.WriteAllTextAsync(
+                    sourcePath,
+                    "public class Sample { public int Updated() => 2; }");
+                discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                    workspaceRoot,
+                    WorkspaceDiscoveryService.DefaultPolicy);
+                ActiveIndexPlanningSnapshot previous = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                    store.ReadActivePlanningSnapshot(firstSnapshot.WorkspaceId));
+                secondSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                    discovered,
+                    previous.PlanningSnapshot.IndexRevision);
+                secondPlan = IncrementalIndexPlanner.PlanFromPublished(
+                    previous.PlanningSnapshot,
+                    secondSnapshot);
+                store.PublishFaultTestHook = static point =>
+                {
+                    Assert.Equal(IndexGenerationPublishFaultPoint.BeforeCommit, point);
+                    throw new IOException("before publish commit fault injection");
+                };
+
+                Assert.Throws<IOException>(() => store.StageAndPublish(
+                    secondSnapshot,
+                    secondPlan,
+                    previous.DatabaseGenerationRevision));
+                Assert.True(store.InspectStaging(
+                    secondSnapshot.WorkspaceId,
+                    secondSnapshot.IndexRevision).Complete);
+            }
+
+            using (var reopened = new SonnetDbIndexGenerationStore(database))
+            {
+                ActiveIndexPlanningSnapshot active = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                    reopened.ReadActivePlanningSnapshot(firstSnapshot.WorkspaceId));
+                Assert.Equal(1, active.DatabaseGenerationRevision);
+                Assert.Equal(firstSnapshot.IndexRevision, active.PlanningSnapshot.IndexRevision);
+                Assert.True(reopened.InspectStaging(
+                    secondSnapshot.WorkspaceId,
+                    secondSnapshot.IndexRevision).Complete);
+
+                IndexStageReport retry = reopened.StageAndPublish(
+                    secondSnapshot,
+                    secondPlan,
+                    active.DatabaseGenerationRevision);
+                Assert.True(retry.Published);
+                Assert.Equal(2, retry.DatabaseGenerationRevision);
+                Assert.Equal(secondSnapshot.IndexRevision, retry.Manifest.IndexRevision);
+            }
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task StageAndPublish_FaultAfterCommit_AfterReopenKeepsNewGenerationAndReusesIt()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            string sourcePath = Path.Combine(workspaceRoot, "Sample.cs");
+            await File.WriteAllTextAsync(
+                sourcePath,
+                "public class Sample { public int Original() => 1; }");
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspaceRoot,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot firstSnapshot = await IndexSnapshotBuilder.BuildAsync(discovered, null);
+            IncrementalIndexPlan firstPlan = IncrementalIndexPlanner.Plan(null, firstSnapshot);
+            WorkspaceIndexSnapshot secondSnapshot;
+
+            using (var store = new SonnetDbIndexGenerationStore(database))
+            {
+                IndexStageReport first = store.StageAndPublish(firstSnapshot, firstPlan, 0);
+                Assert.True(first.Published);
+                Assert.Equal(1, first.DatabaseGenerationRevision);
+
+                await File.WriteAllTextAsync(
+                    sourcePath,
+                    "public class Sample { public int Updated() => 2; }");
+                discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                    workspaceRoot,
+                    WorkspaceDiscoveryService.DefaultPolicy);
+                ActiveIndexPlanningSnapshot previous = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                    store.ReadActivePlanningSnapshot(firstSnapshot.WorkspaceId));
+                secondSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                    discovered,
+                    previous.PlanningSnapshot.IndexRevision);
+                IncrementalIndexPlan secondPlan = IncrementalIndexPlanner.PlanFromPublished(
+                    previous.PlanningSnapshot,
+                    secondSnapshot);
+                var observedFaultPoints = new List<IndexGenerationPublishFaultPoint>();
+                store.PublishFaultTestHook = point =>
+                {
+                    observedFaultPoints.Add(point);
+                    if (point == IndexGenerationPublishFaultPoint.AfterCommit)
+                    {
+                        throw new IOException("after publish commit fault injection");
+                    }
+                };
+
+                Assert.Throws<IOException>(() => store.StageAndPublish(
+                    secondSnapshot,
+                    secondPlan,
+                    previous.DatabaseGenerationRevision));
+                Assert.Equal(
+                    [
+                        IndexGenerationPublishFaultPoint.BeforeCommit,
+                        IndexGenerationPublishFaultPoint.AfterCommit,
+                    ],
+                    observedFaultPoints);
+            }
+
+            using (var reopened = new SonnetDbIndexGenerationStore(database))
+            {
+                ActiveIndexPlanningSnapshot active = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                    reopened.ReadActivePlanningSnapshot(firstSnapshot.WorkspaceId));
+                Assert.Equal(2, active.DatabaseGenerationRevision);
+                Assert.Equal(secondSnapshot.IndexRevision, active.PlanningSnapshot.IndexRevision);
+                using (DatabaseGenerationQueryLease lease = reopened.AcquireActiveGeneration(
+                           firstSnapshot.WorkspaceId))
+                {
+                    Assert.Equal(secondSnapshot.IndexRevision, lease.Generation.GenerationId);
+                    DatabaseGenerationResource documents = Assert.Single(
+                        lease.Generation.Resources,
+                        resource => resource.Kind == DatabaseGenerationResourceKind.DocumentCollection);
+                    DatabaseGenerationResource fullTextResource = Assert.Single(
+                        lease.Generation.Resources,
+                        resource => resource.Kind == DatabaseGenerationResourceKind.DocumentFullTextIndex);
+                    Assert.Single(
+                        lease.Generation.Resources,
+                        resource => resource.Kind == DatabaseGenerationResourceKind.KvKeyspace);
+                    Assert.Equal(documents.Name, fullTextResource.ParentName);
+                }
+
+                string updatedSymbolId = secondSnapshot.Files
+                    .SelectMany(file => file.Symbols)
+                    .Single(symbol => symbol.DisplayName == "Updated")
+                    .Id;
+                StagingQueryProbeResult probe = reopened.ProbeExact(
+                    secondSnapshot.WorkspaceId,
+                    secondSnapshot.IndexRevision,
+                    updatedSymbolId);
+                IndexStorageDocument updated = Assert.Single(probe.Documents);
+                Assert.Equal(secondSnapshot.SourceRevision, updated.SourceRevision);
+                Assert.Equal(secondSnapshot.IndexRevision, updated.IndexRevision);
+                string originalSymbolId = firstSnapshot.Files
+                    .SelectMany(file => file.Symbols)
+                    .Single(symbol => symbol.DisplayName == "Original")
+                    .Id;
+                Assert.Empty(reopened.ProbeExact(
+                    secondSnapshot.WorkspaceId,
+                    secondSnapshot.IndexRevision,
+                    originalSymbolId).Documents);
+                StagingQueryProbeResult fullTextProbe = reopened.ProbeFullText(
+                    secondSnapshot.WorkspaceId,
+                    secondSnapshot.IndexRevision,
+                    "Updated",
+                    20);
+                Assert.Equal("document_fulltext:code_search", fullTextProbe.AccessPath);
+                Assert.Contains(
+                    fullTextProbe.Documents,
+                    document => document.StableId == updatedSymbolId
+                        && document.IndexRevision == secondSnapshot.IndexRevision);
+
+                discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                    workspaceRoot,
+                    WorkspaceDiscoveryService.DefaultPolicy);
+                WorkspaceIndexSnapshot unchangedSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                    discovered,
+                    active.PlanningSnapshot.IndexRevision);
+                IncrementalIndexPlan unchangedPlan = IncrementalIndexPlanner.PlanFromPublished(
+                    active.PlanningSnapshot,
+                    unchangedSnapshot);
+                IndexStageReport retry = reopened.StageAndPublish(
+                    unchangedSnapshot,
+                    unchangedPlan,
+                    active.DatabaseGenerationRevision);
+                Assert.True(retry.Published);
+                Assert.True(retry.ReusedActiveGeneration);
+                Assert.Equal(2, retry.DatabaseGenerationRevision);
+                Assert.Equal(secondSnapshot.IndexRevision, retry.Manifest.IndexRevision);
+            }
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
     private static async Task<JsonElement> RunIndexStageAsync(string workspace, string database)
     {
         using var output = new StringWriter();

@@ -15,6 +15,8 @@ public sealed class McpProtocolHost
     private readonly WorkspaceBinding _binding;
     private readonly InitializeWorkspaceResponse _initialization;
     private readonly McpSchemaCatalog _catalog;
+    private readonly IMcpToolExecutor? _executor;
+    private readonly IReadOnlyList<McpCapability>? _toolGateCapabilities;
 
     /// <summary>
     /// 初始化协议宿主。
@@ -30,6 +32,37 @@ public sealed class McpProtocolHost
             WorkspaceDatabaseState.Empty,
             McpWorkspaceBinder.CreateCapabilities(),
             "initialize").Response!;
+    }
+
+    /// <summary>
+    /// 初始化带 typed 工具执行器的协议宿主。
+    /// </summary>
+    /// <param name="binding">显式工作区绑定。</param>
+    /// <param name="executor">typed 工具执行器。</param>
+    /// <param name="databaseState">初始化时观察到的数据库状态。</param>
+    /// <param name="capabilities">连接公开的真实能力。</param>
+    public McpProtocolHost(
+        WorkspaceBinding binding,
+        IMcpToolExecutor executor,
+        WorkspaceDatabaseState databaseState,
+        IReadOnlyList<McpCapability> capabilities)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(capabilities);
+        _binding = binding;
+        _executor = executor;
+        _toolGateCapabilities = capabilities;
+        _catalog = McpSchemaCatalog.Load();
+        WorkspaceInitializationResult initialization = WorkspaceInitializationEvaluator.Evaluate(
+            binding,
+            databaseState,
+            capabilities,
+            "initialize");
+        _initialization = initialization.Response
+            ?? throw new ArgumentException(
+                $"Database state {databaseState} cannot initialize an MCP host.",
+                nameof(databaseState));
     }
 
     /// <summary>
@@ -188,8 +221,41 @@ public sealed class McpProtocolHost
         }
 
         string correlationId = CreateCorrelationId(id);
-        McpDispatchResult result = McpToolContractDispatcher.Dispatch(tool, arguments, _binding, correlationId, cancellationToken);
-        string errorJson = CoupletJsonSerializer.Serialize(result.Error);
+        McpDispatchResult result = McpToolContractDispatcher.Dispatch(
+            tool,
+            arguments,
+            _binding,
+            correlationId,
+            _executor,
+            cancellationToken,
+            _toolGateCapabilities);
+        if (result.Error is { } error)
+        {
+            return WriteToolError(id, error);
+        }
+
+        if (result.WorkspaceStatus is { } workspaceStatus
+            && result.SerializedWorkspaceStatus is { } serializedWorkspaceStatus)
+        {
+            return WriteToolSuccess(
+                id,
+                workspaceStatus,
+                serializedWorkspaceStatus);
+        }
+
+        return WriteToolError(id, new McpError
+        {
+            Code = McpErrorCodes.InternalError,
+            Reason = "dispatch_result_invalid",
+            Retryable = false,
+            CurrentRevision = _binding.IndexRevision,
+            CorrelationId = correlationId,
+        });
+    }
+
+    private static string WriteToolError(JsonElement id, McpError error)
+    {
+        string errorJson = CoupletJsonSerializer.Serialize(error);
 
         return Write(writer =>
         {
@@ -206,9 +272,36 @@ public sealed class McpProtocolHost
             writer.WritePropertyName("structuredContent");
             writer.WriteStartObject();
             writer.WritePropertyName("error");
-            JsonSerializer.Serialize(writer, result.Error, CoupletJsonContext.Default.McpError);
+            JsonSerializer.Serialize(writer, error, CoupletJsonContext.Default.McpError);
             writer.WriteEndObject();
             writer.WriteBoolean("isError", true);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        });
+    }
+
+    private static string WriteToolSuccess<T>(
+        JsonElement id,
+        T response,
+        string responseJson)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        ArgumentException.ThrowIfNullOrWhiteSpace(responseJson);
+        return Write(writer =>
+        {
+            WriteEnvelopeStart(writer, id);
+            writer.WritePropertyName("result");
+            writer.WriteStartObject();
+            writer.WritePropertyName("content");
+            writer.WriteStartArray();
+            writer.WriteStartObject();
+            writer.WriteString("type", "text");
+            writer.WriteString("text", responseJson);
+            writer.WriteEndObject();
+            writer.WriteEndArray();
+            writer.WritePropertyName("structuredContent");
+            writer.WriteRawValue(responseJson);
+            writer.WriteBoolean("isError", false);
             writer.WriteEndObject();
             writer.WriteEndObject();
         });

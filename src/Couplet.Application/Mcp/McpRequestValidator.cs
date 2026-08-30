@@ -17,7 +17,17 @@ public static class McpRequestValidator
     public static McpError? Validate(
         McpToolRequest request,
         WorkspaceBinding binding,
-        string correlationId)
+        string correlationId) => Validate(
+            request,
+            binding,
+            correlationId,
+            validateRevisionAvailability: true);
+
+    internal static McpError? Validate(
+        McpToolRequest request,
+        WorkspaceBinding binding,
+        string correlationId,
+        bool validateRevisionAvailability)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(binding);
@@ -53,7 +63,8 @@ public static class McpRequestValidator
             }
 
             string? current = selector.Kind == "source" ? binding.SourceRevision : binding.IndexRevision;
-            if (!string.Equals(selector.Value, current, StringComparison.Ordinal))
+            if (validateRevisionAvailability
+                && !string.Equals(selector.Value, current, StringComparison.Ordinal))
             {
                 return Error(McpErrorCodes.StaleRevision, "revision_not_available", false, binding, correlationId);
             }

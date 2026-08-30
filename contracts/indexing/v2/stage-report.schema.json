@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://couplet.dev/contracts/indexing/v2/stage-report.schema.json",
+  "schema_version": "couplet.index_stage.v2",
+  "description": "Couplet source generation stage report with distinct lease- and retention-deferred cleanup revisions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "manifest", "collection_name", "staged", "published", "reused_active_generation", "database_generation_revision", "removed_generation_revisions", "deferred_generation_revisions", "retention_deferred_generation_revisions", "limitations", "problems"],
+  "properties": {
+    "schema_version": { "const": "couplet.index_stage.v2" },
+    "manifest": { "$ref": "../v1/schema.json#/$defs/generation_manifest" },
+    "collection_name": { "type": "string", "pattern": "^cplg_[0-9a-f]{32}$" },
+    "staged": { "type": "boolean" },
+    "published": { "type": "boolean" },
+    "reused_active_generation": { "type": "boolean" },
+    "database_generation_revision": { "type": ["integer", "null"], "minimum": 1 },
+    "blocking_gap": { "type": ["string", "null"] },
+    "removed_generation_revisions": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+    "deferred_generation_revisions": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+    "retention_deferred_generation_revisions": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+    "limitations": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "problems": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+  }
+}
