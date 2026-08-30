@@ -18,7 +18,7 @@ provider cache identity 必须包含 provider、model、version、content hash �
 
 ## 生命周期
 
-策略分别记录 retired generation、日志和 provider cache 的保留时间。workspace 移除时是否删除本地索引必须显式配置；清理操作不能删除 active generation 或仍有 query lease 的 retired generation。
+策略分别记录 retired generation、日志和 provider cache 的 retention duration。`RetiredGenerationRetention` 表示 retired generation 从 durable publish time 起达到该时长后具备清理资格，不承诺“最长保留时间”；active generation 或仍有 query lease 的 retired generation 会继续保留。workspace 移除时是否删除本地索引必须显式配置。
 
 C0 自动化覆盖本地默认策略、在线 provider 未授权、路径绑定和稳定错误。C1/C3 在真实文件发现、symlink、ignore/deny 和 provider 接线后继续执行内容不泄漏与断网测试。
 
@@ -28,6 +28,6 @@ C0 自动化覆盖本地默认策略、在线 provider 未授权、路径绑定�
 - deny 先于 ignore，默认拒绝凭证、`.git`、Couplet 数据库和常见构建产物；Git ignore、binary、generated、symlink escape、unreadable 和大文件 text-only 均以稳定 disposition/reason 报告。
 - 被纳入的文件先冻结 content hash，再由 adapter 读取；发现后文件发生变化时以 `file_changed_after_discovery` 失败，不把跨 revision 内容写进同一 snapshot。
 - staging collection 以 workspace/index revision 派生的非路径名称隔离，manifest 只在 Document/FullText 计数与索引一致性通过后写入控制 keyspace。
-- 默认 3.1.0 package lane 没有 active generation 或 query lease，MCP 不读取 staging。source lane 由 `Tsdb.Generations` 原子发布 generation 独占 planning KV、Document 和 FullText 资源，并用 query lease 阻止 retired cleanup；MCP 尚未绑定该 lease，因此仍 unavailable。
-- source runtime 当前在没有 query lease 时立即清理 retired generation，尚未读取 `RetiredGenerationRetention` 进行延迟调度；该边界通过 `CPL-015:retired_generation_retention_policy_not_connected` 显式报告，不能视为完整数据生命周期策略。
-- 默认 package Native AOT 因 CG-006 关闭 background workers 并暴露 limitation；最新 source lane 使用已修复的默认 worker。普通 source/JIT handshake 不声明 AOT 已验证；source Native AOT publish/no-op smoke 已通过，但 7 天长稳未归档前仍不能外推为 Production 维护证据。
+- 默认 3.1.0 package lane 没有 active generation 或 query lease，MCP 不读取 staging。source lane 由 `Tsdb.Generations` 原子发布 generation 独占 planning KV、Document 和 FullText 资源，并用 query lease 阻止 retired cleanup；`workspace_status` 已使用 per-request active lease，exact/fulltext 查询仍 unavailable。
+- source `index-stage` 通过 `--retired-generation-retention <c>` 读取 invariant `TimeSpan` 并传入 lifecycle store；默认零值保持立即 cleanup。非零值转换为 inclusive UTC publish-time cutoff，未到期 revision 与仍有 lease 的到期 revision 分别报告，cleanup 失败可重试。该接线关闭 CG-007 的 API/集成缺口；固定 package lane 不具备 generation cleanup，保持 3.1.0 staging 行为。
+- 默认 package Native AOT 因 CG-006 关闭 background workers 并暴露 limitation；最新 source lane 使用已修复的默认 worker。普通 source/JIT handshake 不声明 AOT 已验证；2026-08-29 source Native AOT publish/no-op smoke 已通过，本轮 CG-007 变更尚未重新执行 Native AOT publish，且 7 天长稳未归档前仍不能外推为 Production 维护证据。

@@ -47,7 +47,9 @@ MCP Server 启动时必须用 `--workspace <path-or-id>` 或等价显式配置�
 
 返回 initialize 所绑定的 workspace/source/index revision、文件/符号/关系/chunk 计数、索引队列、parser/embedding/schema version、数据库大小、能力等级、阻塞 gap 和是否需要 rebuild。首次连接不需要预先知道 `workspace_id`；handshake 已提供该值。
 
-不得触发隐式全量重建。客户端可据此决定等待、提示用户或只使用已验证能力。
+不得触发隐式全量重建或 Document 全表扫描。客户端可据此决定等待、提示用户或只使用已验证能力。
+
+当前 source lane 在 MCP 启动时显式绑定 `--workspace` 与 `--database` 后开放该工具：每次调用持有一个 active generation lease，只读取同一 planning/manifest snapshot，并以 source-generated typed DTO 返回。`source_revision` 与 `database_bytes` 是 initialize/startup 时的采样值，不是调用时实时工作树扫描；`freshness.reason` 与 diagnostics 必须显式说明该边界，`rebuild_required` 只相对 initialize snapshot 判断。`code_search`/`symbol_get` 未接线前 exact/fulltext capability 仍为 unavailable；成功 status 继续报告尚未关闭的 CG-005，不再报告已关闭的 CG-007。
 
 ### `code_search`
 

@@ -2,7 +2,7 @@
 
 Couplet 是一个面向 Codex、Claude Code 等编码 Agent 的本地优先代码知识与上下文引擎。它把代码解析、增量索引、原生属性图、全文/向量混合检索和有预算的上下文组装连成一条可核验链路，并以嵌入式 `SonnetDB.Core` 作为唯一数据引擎。
 
-> C0 基础与合同已于 2026-08-25 完成。C1 已实现工作区/Git 发现、C#/TypeScript/JavaScript partial 适配器、增量规划和 SonnetDB Document/FullText staging。默认独立构建仍固定 `SonnetDB.Core 3.1.0` 并保持查询 unavailable；显式 `UseSonnetDbSource=true` 联调最新 SonnetDB 源码时，`index-stage` 已接入 `Tsdb.Generations` 的原子发布、active lease/cursor 和 lease-aware cleanup，但 MCP 查询、retention policy、故障注入与容量门禁仍未完成。
+> C0 基础与合同已于 2026-08-25 完成。C1 已实现工作区/Git 发现、C#/TypeScript/JavaScript partial 适配器、增量规划和 SonnetDB Document/FullText staging。默认独立构建仍固定 `SonnetDB.Core 3.1.0` 并保持查询 unavailable；显式 `UseSonnetDbSource=true` 联调最新 SonnetDB 源码时，`index-stage` 已接入 `Tsdb.Generations` 的原子发布、active lease/cursor、cutoff-aware cleanup 和提交边界故障回归，显式数据库 MCP 宿主已用 per-request active lease 接通 `workspace_status`。`code_search`、`symbol_get`、真实子进程 kill 与容量门禁仍未完成。
 
 ## 产品边界
 
@@ -37,11 +37,14 @@ dotnet run --project src/Couplet.Cli -- capabilities
 dotnet run --project src/Couplet.Cli -- c0-evidence --repository . --commit working_tree
 dotnet run --project src/Couplet.Cli -- workspace-scan --workspace .
 dotnet run --project src/Couplet.Cli -- index-stage --workspace . --database artifacts/c1-smoke-db
+dotnet run --project src/Couplet.Cli -p:UseSonnetDbSource=true -- index-stage --workspace . --database artifacts/c1-source-db --retired-generation-retention 1.00:00:00
 dotnet run --project src/Couplet.Cli -- c1-capacity --repository . --scale medium --workspace artifacts/c1-medium/workspace --database artifacts/c1-medium/database --report artifacts/c1-medium/report.json
-dotnet run --project src/Couplet.McpServer -- serve --workspace .
+dotnet run --project src/Couplet.McpServer -p:UseSonnetDbSource=true -- serve --workspace . --database artifacts/c1-source-db
 ```
 
-`workspace-scan` 只输出 workspace-relative path 和去凭证仓库身份。默认 package lane 的 `index-stage` 继续只写 generation 独立 staging collection，并返回 `published=false` / `CG-005`。source lane 额外把不含源码正文的 planning snapshot、Document collection 与 FullText index 交给 `Tsdb.Generations` 原子发布；无变化重跑复用 active generation，旧 generation 由 query lease 延迟清理。writer fence 覆盖锁内 fresh discovery、active read、build、plan 和 publish；发布已提交后的 cleanup 失败不会改写为发布失败，而是返回 retry limitation。当前 runtime 对无租约 retired generation 立即清理，尚未接入 `RetiredGenerationRetention` 调度，因此报告显式包含 CPL-015 limitation。`c1-capacity` 仍是未发布 staging characterization，两档 Performance/Capacity gate 均为 FAIL。固定 3.1.0 package 的 win-x64 Native AOT 仍关闭不兼容 worker 并报告 CG-006；最新 source lane 已通过本轮 Native AOT 首次 publish/no-op smoke，但 7 天长稳仍未归档，JIT handshake 也不把 source 选择外推为 AOT 已验证。MCP Server 当前仍不读取 active generation，索引/图工具继续返回结构化 unavailable 错误。
+`workspace-scan` 只输出 workspace-relative path 和去凭证仓库身份。默认 package lane 的 `index-stage` 继续只写 generation 独立 staging collection，并返回 `published=false` / `CG-005`。source lane 额外把不含源码正文的 planning snapshot、Document collection 与 FullText index 交给 `Tsdb.Generations` 原子发布；无变化重跑复用 active generation。`--retired-generation-retention <c>` 接受 invariant `TimeSpan`，表示 retired generation 从发布时间起达到该时长后才具备清理资格；默认零值保持立即清理，active 或仍有 query lease 的 generation 不会删除。source 报告使用 `couplet.index_stage.v2`，分别返回 lease-deferred 与 retention-deferred revisions；冻结的默认 package `couplet.index_stage.v1` payload/schema 不变。writer fence 覆盖锁内 fresh discovery、active read、build、plan 和 publish；发布已提交后的 cleanup 失败不会改写为发布失败，而是返回 retry limitation。内部确定性故障点冻结了 SonnetDB 原子 publish 的提交边界，但不是子进程强杀证据。`c1-capacity` 仍是未发布 staging characterization，两档 Performance/Capacity gate 均为 FAIL。固定 3.1.0 package 的 win-x64 Native AOT 仍关闭不兼容 worker 并报告 CG-006；最新 source lane 已修复 worker 路径，2026-08-29 Native AOT 首次 publish/no-op smoke 已通过，但本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍未归档，JIT handshake 也不把 source 选择外推为 AOT 已验证。
+
+source lane 的 MCP Server 在同时显式提供 `--workspace` 与 `--database` 时，用真实 workspace discovery identity 打开数据库，并在完整 stdio host 生命周期内持有 store。`workspace_status` 每次请求获取并释放一个 active generation lease，只读取同一 planning/manifest snapshot，校验资源角色/名称、schema、identity/state 和 checksum 形状；它不会扫描 Document 行、重算 checksum 或触发 rebuild。返回的 source revision 与 database bytes 是 MCP 启动时采样值，freshness/diagnostics 会明确该边界，`RebuildRequired` 仅相对 initialize 快照判断。exact/fulltext capability 与其余七个工具在实际查询接线前继续 unavailable，状态项仍报告 CG-005；CG-007 的选择性 cleanup API/接线缺口已关闭。
 
 ## 目标能力
 
@@ -92,4 +95,4 @@ dotnet run --project src/Couplet.McpServer -- serve --workspace .
 
 ## 当前状态
 
-C0 已完成，C1 处于实现中：CPL-010~012 已落地；CPL-013~015 在 source lane 已接通 active generation 原子切换、planning snapshot、query lease/cursor、writer fence 和 lease-aware cleanup 的小型自动化，`CG-005` 进入 verifying。MCP 尚未绑定 active lease，retention policy、publish 前后 kill/reopen、Medium/Large 增量与双客户端门禁仍未通过，因此八个 MCP 工具继续 unavailable，C1 不能标完成。默认 3.1.0 package 的 Native AOT 仍受 CG-006 限制；source lane 已使用修复后的 worker 路径，但当前 AOT 证据仍待统一重跑。C2 Preview、C3 Beta 和 C4 Production 继续受联合门禁约束。
+C0 已完成，C1 处于实现中：CPL-010~012 已落地；CPL-013~015 在 source lane 已接通 active generation 原子切换、planning snapshot、query lease/cursor、writer fence、cutoff-aware cleanup、确定性提交边界故障重开和 `workspace_status` active-lease 自动化，`CG-005` 进入 verifying，`CG-007` 的 API/接线缺口已关闭。`code_search`、`symbol_get`、实时 watcher freshness、查询 cursor、真实子进程 publish 前后 kill/reopen、Medium/Large 增量与双客户端门禁仍未通过，C1 不能标完成。默认 3.1.0 package 的 Native AOT 仍受 CG-006 限制；source lane 已使用修复后的 worker 路径，2026-08-29 win-x64 CLI publish/no-op smoke 已通过，但本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍待归档。C2 Preview、C3 Beta 和 C4 Production 继续受联合门禁约束。

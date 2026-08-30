@@ -7,7 +7,7 @@
 | Couplet 需求 | Couplet 交付 | SonnetDB public capability / 编号 | 联调开始 | Couplet 发布 gate |
 |---|---|---|---|---|
 | workload、语料、schema、SLO | CPL-001~007 | M40 `#341` | 立即同步设计 | 双方冻结相同 manifest/合同后 C0 PASS |
-| generation/cursor/recovery | CPL-002、CPL-013~015 | 最新源码 `Tsdb.Generations` 的 atomic publish、query lease、cursor 与 cleanup | source ProjectReference 已可调用 | MCP/retention/fault/capacity 关闭 CG-005 后 C1 PASS |
+| generation/cursor/recovery | CPL-002、CPL-013~015 | 最新源码 `Tsdb.Generations` 的 atomic publish、query lease、cursor 与 cutoff cleanup | source ProjectReference 已可调用，CG-007 API/接线已关闭 | MCP exact/fulltext、真实 fault/capacity 关闭 CG-005 后 C1 PASS |
 | 原生节点/边/邻接/属性索引 | CPL-020~021 | M40 `#347/#348` | 对应 API 可调用 | 纳入 `#352` correctness/recovery gate |
 | 流式 BFS/DFS/path/预算 | CPL-022~024 | M40 `#349/#350` | 对应 API/diagnostics 可调用 | `#352` + Couplet C2 全 PASS 后 Preview |
 | Server/SDK/import parity | Couplet embedded adapter/MCP | M40 `#351` | typed SDK/embedded contract 可调用 | `#352` 联合报告 |
@@ -31,14 +31,14 @@ Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自�
 
 - 默认 lane 固定 `SonnetDB.Core 3.1.0` 官方 package 和 content hash；显式 `UseSonnetDbSource=true` lane 直接 ProjectReference 最新源码，restore lock 隔离在 `obj/`。
 - `couplet.sonnetdb_handshake.v1` 分开报告 `integration_state` 与 `release_level`；public API 存在时前者可为 available，后者在联合门禁通过前仍为 unavailable。
-- source lane 的 `generation.atomic_publish` 已有 Couplet runtime 小型接线；release level 仍被 MCP/retention/fault/capacity 的 CG-005 联合门禁阻塞。`hybrid.shared_plan` 继续由 CG-002 阻塞。
-- 八个 MCP schema 和 stdio 协议已就绪，但索引/图/混合工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
+- source lane 的 `generation.atomic_publish` 与 cutoff cleanup 已有 Couplet runtime 小型接线；release level 仍被 MCP exact/fulltext、真实 fault/capacity 的 CG-005 联合门禁阻塞。`hybrid.shared_plan` 继续由 CG-002 阻塞。
+- 八个 MCP schema 和 stdio 协议已就绪；source lane 在显式绑定数据库时可通过 `workspace_status` 读取 active generation 状态，其余七个索引/图/混合工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
 - C1 已通过固定 package 建立 generation 独立 Document collection、stable ID/path/qualified identity indexes 与 FullText index，批量写入、索引一致性、计数、checkpoint 和 reopen 均有自动化证据。
 - staging 查询探针实际走 `document_path_index:by_stable_id` 与 `document_fulltext:code_search`；它们只用于内部联调证据，不能替代 active generation filter、query lease 或公开 MCP contract。
 - Codex 与 Claude Code 双客户端回归已验证三个 C1 MCP 工具在只有 staging 时稳定返回 `CG-005/generation_publish_blocked`，响应不含 staging items。
 - 默认 package public API 仍不能组合 generation 不变量；source lane 使用 Core 单一 `Tsdb.Generations` catalog，未建立应用层第二提交日志。CG-005 状态为 verifying。
 - Medium/Large 已完成一次真实 characterization；Large initial、两档 100-file 变化和两档 peak RSS 均未达目标，Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。详细数据见 [`c1-capacity-evidence.md`](c1-capacity-evidence.md)。
-- 默认 package 的 win-x64 Native AOT 继续关闭不兼容 worker并报告 CG-006；最新 source 已修复 worker shutdown。普通 source/JIT handshake 只报告 `source_workers_enabled`，不再从 `UseSonnetDbSource` 外推 AOT 已验证；Native AOT 进程报告 `source_aot_workers_enabled_pending_soak`，当前 publish/no-op smoke 已通过，7 天长稳仍需归档。
+- 默认 package 的 win-x64 Native AOT 继续关闭不兼容 worker并报告 CG-006；最新 source 已修复 worker shutdown。普通 source/JIT handshake 只报告 `source_workers_enabled`，不再从 `UseSonnetDbSource` 外推 AOT 已验证；Native AOT 进程报告 `source_aot_workers_enabled_pending_soak`。2026-08-29 的 source publish/no-op smoke 已通过，本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍需归档。
 
 ## 变更规则
 

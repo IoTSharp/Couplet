@@ -42,7 +42,7 @@ Couplet 仓库自身尚未决定许可证；下表只记录依赖的上游许可
 
 | 范围 | 依赖 | 固定版本 | 上游许可证 | trim/AOT 风险 |
 |---|---|---|---|---|
-| runtime | `SonnetDB.Core` | 默认 `3.1.0`；opt-in latest source | MIT | package AOT staging 关闭不兼容 worker；source win-x64 CLI publish/no-op smoke 与 Core worker shutdown 已验证，长稳待归档 |
+| runtime | `SonnetDB.Core` | 默认 `3.1.0`；opt-in latest source | MIT | package AOT staging 关闭不兼容 worker；2026-08-29 source win-x64 CLI publish/no-op smoke 与 Core worker shutdown 已验证，本轮 CG-007 变更未重新 AOT publish，长稳待归档 |
 | transitive runtime | `System.IO.Hashing` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | transitive runtime | `System.Numerics.Tensors` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | test only | `Microsoft.NET.Test.Sdk` | `18.8.1` | MIT | 不进入生产输出 |
@@ -64,15 +64,15 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 | MCP Server Native AOT publish/run | PASS，0 IL/AOT warning | initialize、schema discovery 和 unavailable tool call |
 | reflection JSON disabled | PASS | typed DTO 全部绑定 generated `JsonTypeInfo`，协议包装使用 `Utf8JsonWriter` |
 
-未验证：Linux/macOS Native AOT、AOT background compaction/retention/KV maintenance、已发布 generation query、语言 parser worker、安装包和长稳。它们不能从本次 PASS 外推。
+未验证：Linux/macOS Native AOT、AOT background compaction/retention/KV maintenance、已发布 generation 的 exact/fulltext query、语言 parser worker、安装包和长稳。它们不能从本次 PASS 外推。
 
 ## 6. executable/worker 发布矩阵
 
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
-| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish，MCP/retention/fault/capacity 未完成 |
+| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext、真实 fault/capacity 未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema/unavailable tools | PASS | PASS | 否 | 无可查询 generation，八工具产品能力 unavailable |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库仅开放 `workspace_status`；其余七工具及 exact/fulltext query unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：

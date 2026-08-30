@@ -18,8 +18,9 @@
 | CG-002 | FullText + Vector + Native Graph 的 shared typed hybrid plan 和实际访问路径尚未通过 | SonnetDB M40 `#353`-`#359`，关联 M35/M36 | Couplet C3 Beta 发布及后续 | known | 允许对目标 API 联调；不得产品层多路 merge/扩图，双方证据共同关闭 `#359` |
 | CG-003 | 生产图快照、维护、7 天长稳、Native AOT 与固定硬件发布证据尚未通过 | SonnetDB M40 `#360`-`#367` | Couplet C4/1.0 发布 | known | 与 `#360~#366` 并行取证；保持 Preview/Beta/未发布，双方证据共同关闭 `#367` |
 | CG-004 | C0 曾缺少可执行 typed MCP、fixture/eval runner 和固定 package | Couplet C0 | C0 合同门禁 | closed | 2026-08-25 由固定 package、八工具 schema、stdio smoke、35 个测试和 C0 evidence 关闭；索引能力属于 C1，继续 unavailable |
-| CG-005 | 最新 SonnetDB `Tsdb.Generations` 已可联调；Couplet 尚缺 MCP active query、retention policy、进程故障和容量联合门禁 | SonnetDB M40 generation contract + Couplet CPL-013/CPL-015 | Couplet C1 发布及后续 | verifying | source lane 可执行 fenced publish/lease/cursor/cleanup；默认 package 仍仅 staging，MCP 继续 unavailable，不引入第二提交日志 |
+| CG-005 | 最新 SonnetDB `Tsdb.Generations` 已可联调；Couplet 尚缺完整 MCP active query、真实进程故障和容量联合门禁 | SonnetDB M40 generation contract + Couplet CPL-013/CPL-015 | Couplet C1 发布及后续 | verifying | source lane 可执行 fenced publish/lease/cursor/cutoff cleanup 和 `workspace_status`；默认 package 仍仅 staging，exact/fulltext 查询继续 unavailable，不引入第二提交日志 |
 | CG-006 | `SonnetDB.Core 3.1.0` 默认 background workers 的 Native AOT shutdown 不兼容；最新 source 已修复并通过 Core/Couplet smoke | SonnetDB Core lifecycle + Couplet CPL-007/CPL-015/CPL-043 | 默认 package AOT 与完整 source 长稳证据 | verifying | 默认 package AOT 继续关闭 worker并报告 limitation；source lane 保留默认 worker，待长稳归档 |
+| CG-007 | generation public cleanup 曾不能按 durable publish-time cutoff 选择 retired generation | SonnetDB 通用 generation lifecycle API + Couplet CPL-015 | API/接线阻塞已解除；C1 固定硬件增长门禁仍归 CG-005 | closed | source lane 使用 Core cutoff overload；固定 package lane 保持 3.1.0 staging，不直接删资源或建立第二套生命周期 |
 
 上述状态以公共能力边界为主；C1 Medium/Large characterization 已把未达门禁的性能结果附到 CG-005 复现语料，但尚不足以把每个性能失败归因为特定 Core 缺口。进一步最小复现确认责任边界后，通用 Core 问题必须登记独立 gap，Couplet 产品层问题必须直接修复，不得只在日志或 PR 评论中记录。
 
@@ -32,10 +33,10 @@
 - Corpus：Couplet 自身工作区、自动化 C#/TypeScript 小型 fixture，以及 `fixtures/c1/capacity-manifest.v1.json` 冻结的 Medium（1m LOC / 100k symbols）和 Large（10m LOC / 1m symbols）双语言语料；manifest SHA-256 为 `38f906b9b65f88e11bb2953fa2ee45e97105815c13d6b8a364230da1ee9fb1b4`
 - 操作：构建 generation 独立 Document collection、path indexes 和 FullText index，批量写入后 checkpoint/reopen；执行 initial、100-file 变化、exact/FullText warm query 与 consistency reopen；随后尝试建立 active generation publication/query lease/cleanup 生命周期
 - 预期：跨模型派生状态以单一原子 active revision 发布，查询绑定 lease/cursor，retired generation 仅在租约归零后清理
-- 实际：固定 package 只能完成 staging。source lane 已将 planning KV、Document 与 FullText 交给 `Tsdb.Generations`，小型回归覆盖 publish/reopen/no-op、active lease、cursor stale、writer fence、lease-aware cleanup，以及 publish 后 cleanup failure 隔离；MCP、retention policy 和 publish 前后进程故障尚未接线。既有 Medium/Large 数据来自全量 staging，不能外推 source generation 性能。
+- 实际：固定 package 只能完成 staging。source lane 已将 planning KV、Document 与 FullText 交给 `Tsdb.Generations`，小型回归覆盖 publish/reopen/no-op、active lease、cursor stale、writer fence、lease/cutoff-aware cleanup、publish 后 cleanup failure 隔离，以及不扫描 Document 的 `workspace_status` per-request lease；exact/fulltext 查询、实时 watcher freshness 和 publish 前后真实进程故障尚未接线。既有 Medium/Large 数据来自全量 staging，不能外推 source generation 性能。
 - 最小复现：`Stage_WithCSharpAndTypeScript_PersistsVerifiedUnpublishedGenerationAcrossReopen`、`Plan_AfterRealGitBranchSwitch_RebuildsAndKeepsStagingGenerationsIsolatedAcrossReopen`、`InspectStaging_AfterMissingOrCorruptCompletionMarker_RejectsGenerationAndAllowsDeterministicRestage`；CLI `index-stage` 报告 `published=false`、`blocking_gap=CG-005`；`c1-capacity --scale medium|large` 产生 `couplet.c1_capacity_evidence.v1`
 - 禁止旁路：不得由 Couplet 增加第二提交日志、将 staging 暴露为 active、用不受租约保护的 collection 指针模拟发布，或在 MCP 中隐藏 revision 不连续
-- 关闭证据：已有 SonnetDB public API/Core 回归和 Couplet 小型 cursor/lease/cleanup 回归；仍需 kill-before/after-publish、retention/concurrency、Codex/Claude Code 发布后查询一致性与 Medium/Large 固定硬件双门禁共同 PASS
+- 关闭证据：已有 SonnetDB public API/Core 回归和 Couplet 小型 cursor/lease/cutoff cleanup、`workspace_status` 回归；仍需 kill-before/after-publish、实时 watcher 与 exact/fulltext cursor、Codex/Claude Code 发布后查询一致性及 Medium/Large 固定硬件双门禁共同 PASS
 
 ### CG-006：Native AOT 后台维护生命周期
 
@@ -51,6 +52,22 @@
 - 最小复现：发布 win-x64 Native AOT CLI 后执行 `index-stage --workspace <one-file-workspace> --database <empty-dir>`；默认 package 配置在退出时崩溃
 - 禁止旁路：不得吞掉 dispose 异常、跳过 `Tsdb.Dispose()`、把后台维护已关闭伪装为 Production，或以定期重启隐藏增长
 - 关闭证据：SonnetDB AOT-safe worker shutdown 回归、Couplet AOT staging/daemon reopen、compaction/retention/KV maintenance correctness 和 7 天增长报告共同 PASS
+
+### CG-007：generation retention 选择性 cleanup
+
+- 状态：closed（2026-08-30，关闭范围为 public API 表达能力与 Couplet source 接线；不代表 C1 容量门禁通过）
+- 首次稳定复现：2026-08-30 / Couplet C1 source generation integration
+- Owner：SonnetDB 通用 generation lifecycle extend-only public API + Couplet CPL-015 integration
+- 原阻塞阶段：C1 retention correctness 与持续发布数据库增长；剩余固定硬件/长稳增长证据继续由 CG-005/C4 门禁跟踪
+- Corpus：同一 workspace stream 连续发布 revision 1、2、3；revision 3 active，revision 1 的 durable `PublishedAtUtc + retention` 已到期，revision 2 尚未到期；随后关闭并重开数据库
+- 环境：最新 SonnetDB source lane；零 retention 与非零 retention；可控 Couplet `TimeProvider`；有/无 revision 1 query lease
+- 操作：Couplet 用可控 `TimeProvider` 计算 inclusive UTC cutoff，并调用 `CleanupRetired(stream, DatabaseGenerationCleanupOptions, token)`；零 retention 继续调用既有立即清理 overload
+- 预期：只删除已到期且非 active、无 lease 的 revision 1；保留未到期 revision 2；有 lease 时 revision 1 继续 deferred；零 retention 可立即清理全部 eligible retired generations
+- 实际：Core 在 generation 临界区内按 durable `PublishedAtUtc <= cutoff` 重新选择 retired 候选，并分别返回 removed、lease-deferred 和 retention-deferred revisions。Couplet source lane 报告相同三类结果，删除 staging marker 只跟随真正 removed revisions；mixed-age 重开得到 `removed=[1]`、`retention_deferred=[2]`、`active=3`。
+- 最小回归：`CleanupRetired_AfterReopenWithMixedAges_RemovesOnlyDueGeneration`；另覆盖非零 offset 的 UTC inclusive cutoff、lease release、预取消、注入失败后 retry、`TimeSpan.MaxValue` cutoff clamp，以及连续六次零 retention publish 后 catalog 只保留 active revision
+- 禁止旁路：不得由 Couplet 直接删除 generation catalog/Document/KV/FullText 资源，不得用进程内 timer 或长期 lease 代替 durable policy，不得等“全部 retired 都到期”后整批删除，因为持续发布会造成旧 generation 无界滞留
+- 已交付合同：SonnetDB 以 extend-only overload 接受 `published_before_utc` cutoff，在同一 schema/generation 临界区内重新检查候选仍非 active、仍满足 cutoff 且 lease 为零，并返回 removed、lease-deferred 与 retention-deferred revisions
+- 关闭证据：SonnetDB Core 的 zero/not-due/due/mixed-age/reopen/lease/concurrent-publish 与 public API 兼容性回归，加上 Couplet source lifecycle/CLI/wire 回归。目标硬件 Medium/Large 和 7 天增长仍是独立 FAIL gate，不以本 gap 关闭替代
 
 ## Gap 模板
 

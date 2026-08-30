@@ -13,7 +13,7 @@
 | 原生属性图无旁路决策 | ✅ 已完成 | ADR 0002、`docs/capability-gaps.md` |
 | 性能缺口优先回收决策 | ✅ 已完成 | ADR 0003、`docs/quality-gates.md` |
 | Couplet C0 基础与合同 | ✅ 已完成 | 版本化 graph/generation/security/MCP 合同、fixture/eval runner、35 个自动化测试和 stdio smoke |
-| Couplet 可执行产品 | 🚧 C1 实现中 | source generation 原子发布已接线且 Native AOT publish/no-op smoke 已重跑；MCP active query、retention/fault/capacity 与 7 天长稳仍受门禁约束，默认 package AOT 仍受限 |
+| Couplet 可执行产品 | 🚧 C1 实现中 | source generation 原子发布、cutoff-aware cleanup 及提交边界故障重开回归已接线；MCP exact/fulltext query、真实进程 kill、capacity 与 7 天长稳仍受门禁约束，默认 package AOT 仍受限 |
 | SonnetDB 最新源码联调 | 🚧 generation API 已接线 | 显式 source ProjectReference 已接入 `Tsdb.Generations`；默认 `SonnetDB.Core 3.1.0` package 仍作为独立构建基线，M40/Couplet 联合门禁尚未通过 |
 
 状态符号只描述本行结果；“路线已完成”不等于“路线中的产品能力已完成”。
@@ -77,8 +77,8 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - **CPL-011**：✅ 已实现可替换语言适配器与 Semantic Tier；首批 C#、TypeScript/JavaScript 明确为 lexical `Partial`，unsupported/large input 明确为 `TextOnly`，不宣称完整语义；版本化 C1 fixture 冻结同名、重载和当前不支持 generic method 的边界，lexical adapter `1.1.0` 将声明 confidence 固定为 `Inferred/0.9`。
 - **CPL-012**：✅ 已实现 stable file/symbol/chunk ID、UTF-8 byte/line/column source span、content hash、provenance、adapter version、confidence 和符号边界 chunk；完整 golden snapshot 覆盖三种语言与 Unicode source evidence。
 - **CPL-013**：🚧 已实现初次 snapshot、文件监听、content-hash rename、修改/删除、producer/branch rebuild 判定和跨分支隔离。source lane runtime 从 active generation 读取轻量 planning snapshot，传递真实 previous revision，并以 no-op 复用无变化 active generation；默认 package lane 仍只做全量 staging。
-- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；source lane 将 planning KV、Document 与 FullText 原子发布。`workspace_status`、`code_search`、`symbol_get` 尚未绑定 active query lease，仍返回 unavailable。
-- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker、checkpoint retry、staging consistency/reopen，以及 source lane publish/reopen、generation-bound cursor、writer fence、lease-aware retired cleanup 和 cleanup failure 隔离回归。当前 cleanup 对无租约 generation 立即执行，尚未接入 `RetiredGenerationRetention`；publish 前后进程故障、MCP cursor continuity 和容量回归未完成。
+- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；source lane 将 planning KV、Document 与 FullText 原子发布，并在显式数据库 MCP 宿主中用单一 per-request active lease 提供 typed `workspace_status`。该状态调用不扫描 Document、不重算 checksum，source revision/database bytes 为启动快照；`code_search`、`symbol_get` 仍 unavailable。
+- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker、checkpoint retry、staging consistency/reopen，以及 source lane publish/reopen、generation-bound cursor、writer fence、lease-aware/cutoff-aware retired cleanup、cleanup failure 隔离、publish 提交边界故障回归和 `workspace_status` 重开/revision selector fail-closed 回归。`--retired-generation-retention` 把生命周期时长传给可控 UTC cutoff，mixed-age 重开只删除到期且无 lease 的 revision；零值保持立即清理。CG-007 的 Core API/接线缺口已关闭。真实子进程 kill-before/after-publish、查询 cursor continuity 和容量回归未完成。
 
 退出门禁：
 
@@ -88,7 +88,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - Codex 与 Claude Code 能读取相同合同，所有结果都可回到文件、revision 和 source span。
 - SonnetDB `#343/#346` 所需 snapshot lease/cursor/recovery public contract 与 Couplet generation 发布、query lease 和清理回归同时通过；对应 CG-005 关闭。
 
-状态：🚧 实现中（2026-08-29）。CPL-010~012 已落地；CPL-013~015 的 source lane generation publish/acquire/cursor/cleanup、writer fence 与 no-op/reopen 小型回归已实现，`CG-005` 进入 verifying。MCP、retention policy、publish fault、双客户端和 Medium/Large 联合门禁仍未通过；Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。默认 3.1.0 package 的 Native AOT 仍报告 CG-006，source lane 使用已修复的 worker 生命周期但当前证据待统一重跑。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
+状态：🚧 实现中（2026-08-30）。CPL-010~012 已落地；CPL-013~015 的 source lane generation publish/acquire/cursor/cutoff cleanup、writer fence、no-op/reopen、确定性提交边界故障和 `workspace_status` active-lease 小型回归已实现，`CG-005` 进入 verifying，`CG-007` 的选择性 cleanup API/接线缺口已关闭。`code_search`/`symbol_get`、查询 cursor、实时 watcher freshness、真实子进程 publish kill、双客户端和 Medium/Large 联合门禁仍未通过；Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。默认 3.1.0 package 的 Native AOT 仍报告 CG-006；source lane 使用已修复的 worker 生命周期，2026-08-29 win-x64 CLI publish/no-op smoke 已通过，但本轮 CG-007 变更尚未重新执行 Native AOT publish，7 天长稳仍待归档。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
 
 ## C2：原生图代码智能
 
