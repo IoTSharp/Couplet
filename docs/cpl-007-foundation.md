@@ -42,7 +42,7 @@ Couplet 仓库自身尚未决定许可证；下表只记录依赖的上游许可
 
 | 范围 | 依赖 | 固定版本 | 上游许可证 | trim/AOT 风险 |
 |---|---|---|---|---|
-| runtime | `SonnetDB.Core` | 默认 `3.1.0`；opt-in latest source | MIT | package AOT staging 关闭不兼容 worker；2026-08-29 source win-x64 CLI publish/no-op smoke 与 Core worker shutdown 已验证，本轮 CG-007 变更未重新 AOT publish，长稳待归档 |
+| runtime | `SonnetDB.Core` | 默认 `3.1.0`；opt-in latest source | MIT | package AOT staging 关闭不兼容 worker；source win-x64 CLI publish/no-op smoke 与 Core worker shutdown 已验证，本轮 CLI/Daemon/MCP Server source publish 均无 IL/AOT warning，长稳待归档 |
 | transitive runtime | `System.IO.Hashing` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | transitive runtime | `System.Numerics.Tensors` | `10.0.10` | MIT | 由 SonnetDB package 引入 |
 | test only | `Microsoft.NET.Test.Sdk` | `18.8.1` | MIT | 不进入生产输出 |
@@ -70,15 +70,15 @@ runtime package 只通过单独兼容性变更升级，必须同步 lock、hands
 
 | 单元 | 当前功能 | 普通 Release | Native AOT win-x64 | 可独立发布 | 主要限制 |
 |---|---|---|---|---|---|
-| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source 待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext、真实 fault/capacity 未完成 |
+| `Couplet.Cli` | 版本/能力、fixture/evidence runner、workspace scan、index stage/publish | PASS | package PASS with CG-006；source publish PASS、长稳待归档 | 否 | source 已 publish/cutoff cleanup，MCP exact/fulltext 过滤已接线；真实 fault/capacity 未完成 |
 | `Couplet.Daemon` | 版本/能力与可取消空生命周期 | PASS | PASS | 否 | 未打开 workspace/SonnetDB，不是可用索引 daemon |
-| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同 active cursor/no-scan 与 `symbol_get`、其余 unavailable tools | PASS | PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；跨 generation cursor、fulltext filter、C2/C3 工具仍 unavailable |
+| `Couplet.McpServer` | typed stdio/schema、source active `workspace_status`、exact/fulltext `code_search` Preview、fulltext 同 active cursor/no-scan、path/language/entity-kind 过滤与 `symbol_get`、其余 unavailable tools | PASS | source publish PASS | 否 | source + 显式数据库开放 status/search/symbol 查询；跨 generation cursor、C2/C3 工具仍 unavailable |
 | parser worker | 未创建 | N/A | N/A | 否 | parser 选择与隔离属于 C1 |
 
 统一 AOT 命令：
 
 ```powershell
-dotnet publish <project.csproj> --configuration Release --runtime win-x64 -p:CoupletPublishAot=true
+dotnet publish <project.csproj> --configuration Release --runtime win-x64 -p:CoupletPublishAot=true -p:UseSonnetDbSource=true
 ```
 
 “固定 package 可独立构建”不等于“可独立发布产品”。只有对应功能、跨平台、安装和阶段 gate 全部关闭后才能改变“可独立发布”列。

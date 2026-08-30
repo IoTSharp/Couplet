@@ -270,7 +270,9 @@ public static class McpToolContractDispatcher
         {
             WorkspaceStatusRequest status => status.Cursor is null,
             CodeSearchRequest search => !string.IsNullOrWhiteSpace(search.Query)
-                && search.Mode is "exact" or "fulltext" or "vector" or "hybrid",
+                && search.Mode is "exact" or "fulltext" or "vector" or "hybrid"
+                && (search.Path is null || !string.IsNullOrWhiteSpace(search.Path))
+                && (search.Language is null || !string.IsNullOrWhiteSpace(search.Language)),
             SymbolGetRequest symbol =>
                 string.IsNullOrWhiteSpace(symbol.SymbolId) != string.IsNullOrWhiteSpace(symbol.QualifiedIdentity),
             SymbolRelationsRequest relations => !string.IsNullOrWhiteSpace(relations.SymbolId)

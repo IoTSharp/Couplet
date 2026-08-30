@@ -156,6 +156,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 new DocumentPathIndexDefinition("by_stable_id", "$.stable_id", IsUnique: true),
                 new DocumentPathIndexDefinition("by_record_type", "$.record_type"),
                 new DocumentPathIndexDefinition("by_path", "$.path"),
+                new DocumentPathIndexDefinition("by_language", "$.language"),
+                new DocumentPathIndexDefinition("by_entity_kind", "$.entity_kind", IsSparse: true),
                 new DocumentPathIndexDefinition("by_qualified_identity", "$.qualified_identity", IsSparse: true),
             ],
             fullTextIndexes:
@@ -459,11 +461,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             }
 
             DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(documentsResource.Name);
-            if (schema?.TryGetIndex("by_stable_id") is null
-                || schema.TryGetIndex("by_record_type") is null
-                || schema.TryGetIndex("by_path") is null
-                || schema.TryGetIndex("by_qualified_identity") is null
-                || schema.TryGetFullTextIndex(fullTextResource.Name) is null)
+            if (!HasRequiredQuerySchema(schema, fullTextResource.Name))
             {
                 throw new InvalidDataException("active_generation_document_schema_invalid");
             }
@@ -488,6 +486,10 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         string query,
         long offset,
         int pageSize,
+        string? path,
+        string? language,
+        CodeEntityKind? kind,
+        long maxPostingVisits,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -496,6 +498,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPostingVisits);
         cancellationToken.ThrowIfCancellationRequested();
 
         int firstResult = checked((int)offset);
@@ -537,11 +540,73 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
         DocumentFullTextIndex fullTextIndex = schema.TryGetFullTextIndex(lease.FullTextIndexName)
             ?? throw new InvalidDataException("active_generation_fulltext_index_missing");
-        IReadOnlyList<DocumentFullTextSearchHit> fullTextHits = collection.SearchFullText(
-            fullTextIndex,
-            "$.search_text",
-            query,
-            topK);
+        bool hasFilters = path is not null || language is not null || kind is not null;
+        IReadOnlyList<DocumentFullTextSearchHit> fullTextHits;
+        string accessPath;
+        long candidates;
+        long examined;
+        if (hasFilters)
+        {
+            HashSet<string> allowedDocumentIds = BuildFullTextAllowedDocumentIds(
+                lease,
+                schema,
+                collection,
+                path,
+                language,
+                kind,
+                maxPostingVisits,
+                cancellationToken,
+                out string filterAccessPath,
+                out long filterVisits);
+            if (allowedDocumentIds.Count == 0)
+            {
+                fullTextHits = [];
+                candidates = 0;
+                examined = filterVisits;
+            }
+            else
+            {
+                long remainingPostingVisits = maxPostingVisits - filterVisits;
+                if (remainingPostingVisits <= 0)
+                {
+                    throw new ActiveIndexFullTextPostingBudgetExceededException(
+                        checked(filterVisits + 1),
+                        maxPostingVisits);
+                }
+
+                DocumentFullTextFilteredSearchResult filtered = collection.SearchFullTextFiltered(
+                    fullTextIndex,
+                    "$.search_text",
+                    query,
+                    topK,
+                    allowedDocumentIds,
+                    remainingPostingVisits,
+                    cancellationToken);
+                if (filtered.PostingBudgetExceeded)
+                {
+                    throw new ActiveIndexFullTextPostingBudgetExceededException(
+                        checked(filterVisits + filtered.PostingVisits),
+                        maxPostingVisits);
+                }
+
+                fullTextHits = filtered.Hits;
+                candidates = filtered.FilterCandidateCount;
+                examined = checked(filterVisits + filtered.PostingVisits);
+            }
+            accessPath = "document_fulltext_filtered:code_search:" + filterAccessPath;
+        }
+        else
+        {
+            fullTextHits = collection.SearchFullText(
+                fullTextIndex,
+                "$.search_text",
+                query,
+                topK);
+            accessPath = "document_fulltext:code_search";
+            candidates = fullTextHits.Count;
+            examined = Math.Max(0, fullTextHits.Count - firstResult);
+        }
+
         int pageCount = Math.Max(0, fullTextHits.Count - firstResult);
         var hydrated = new List<ActiveIndexSearchHit>(pageCount);
         for (int index = firstResult; index < fullTextHits.Count; index++)
@@ -560,10 +625,125 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         }
 
         return new ActiveIndexSearchResult(
-            "document_fulltext:code_search",
-            fullTextHits.Count,
-            hydrated.Count,
+            accessPath,
+            candidates,
+            examined,
             hydrated);
+    }
+
+    private static HashSet<string> BuildFullTextAllowedDocumentIds(
+        ActiveIndexQueryLease lease,
+        DocumentCollectionSchema schema,
+        DocumentCollectionStore collection,
+        string? path,
+        string? language,
+        CodeEntityKind? kind,
+        long maxCandidates,
+        CancellationToken cancellationToken,
+        out string accessPath,
+        out long filterVisits)
+    {
+        var budget = new ActiveIndexFilterVisitBudget(maxCandidates);
+        var candidateSets = new List<(string AccessPath, HashSet<string> Ids)>();
+        if (path is not null)
+        {
+            DocumentPathIndex pathIndex = schema.TryGetIndex("by_path")
+                ?? throw new InvalidDataException("active_generation_path_filter_index_missing");
+            string pattern = path.Replace('\\', '/');
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (IndexPlanningFile file in lease.PlanningSnapshot.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                budget.VisitPlanningFile();
+                if (System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(
+                    pattern,
+                    file.Path,
+                    ignoreCase: false))
+                {
+                    int count = collection.CountByIndex(pathIndex, [file.Path]);
+                    budget.VisitFilterCandidates(count);
+                    foreach (DocumentRow row in collection.GetByIndex(pathIndex, file.Path, count))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        ids.Add(row.Id);
+                    }
+                }
+            }
+
+            candidateSets.Add((
+                "planning_snapshot_path_glob+document_path_index:" + pathIndex.Name,
+                ids));
+        }
+
+        if (language is not null)
+        {
+            DocumentPathIndex languageIndex = schema.TryGetIndex("by_language")
+                ?? throw new InvalidDataException("active_generation_language_filter_index_missing");
+            HashSet<string> ids = ReadBoundedFilterCandidates(
+                collection,
+                languageIndex,
+                language.ToLowerInvariant(),
+                budget,
+                cancellationToken);
+            candidateSets.Add(("document_path_index:" + languageIndex.Name, ids));
+        }
+
+        if (kind is not null)
+        {
+            DocumentPathIndex kindIndex = schema.TryGetIndex("by_entity_kind")
+                ?? throw new InvalidDataException("active_generation_kind_filter_index_missing");
+            HashSet<string> ids = ReadBoundedFilterCandidates(
+                collection,
+                kindIndex,
+                kind.Value.ToString(),
+                budget,
+                cancellationToken);
+            candidateSets.Add(("document_path_index:" + kindIndex.Name, ids));
+        }
+
+        if (candidateSets.Count == 0)
+        {
+            throw new InvalidOperationException("A filtered full-text plan requires at least one filter index.");
+        }
+
+        (string AccessPath, HashSet<string> Ids) first = candidateSets
+            .OrderBy(candidate => candidate.Ids.Count)
+            .ThenBy(candidate => candidate.AccessPath, StringComparer.Ordinal)
+            .First();
+        var allowed = new HashSet<string>(first.Ids, StringComparer.Ordinal);
+        foreach ((string _, HashSet<string> ids) in candidateSets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(ids, first.Ids))
+            {
+                allowed.IntersectWith(ids);
+            }
+        }
+
+        accessPath = string.Join(
+            "+",
+            candidateSets.Select(candidate => candidate.AccessPath));
+        filterVisits = budget.Visits;
+        return allowed;
+    }
+
+    private static HashSet<string> ReadBoundedFilterCandidates(
+        DocumentCollectionStore collection,
+        DocumentPathIndex index,
+        object value,
+        ActiveIndexFilterVisitBudget budget,
+        CancellationToken cancellationToken)
+    {
+        int count = collection.CountByIndex(index, [value]);
+        budget.VisitFilterCandidates(count);
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (DocumentRow row in collection.GetByIndex(index, value, count))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ids.Add(row.Id);
+        }
+
+        return ids;
     }
 
     internal ActiveIndexSymbolQueryResult QueryActiveSymbol(
@@ -632,6 +812,18 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             _documentsRole,
             DatabaseGenerationResourceKind.DocumentCollection);
         return _database.Documents.Open(resource.Name);
+    }
+
+    internal bool DropActiveDocumentIndexForTest(string workspaceId, string indexName)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(indexName);
+        using DatabaseGenerationQueryLease lease = _database.Generations.AcquireActive(workspaceId);
+        DatabaseGenerationResource resource = lease.GetRequiredResource(
+            _documentsRole,
+            DatabaseGenerationResourceKind.DocumentCollection);
+        return _database.Documents.DropIndex(resource.Name, indexName);
     }
 
     internal DatabaseGenerationCleanupResult CleanupRetired(
@@ -737,10 +929,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         }
         else
         {
-            if (schema.TryGetIndex("by_stable_id") is null
-                || schema.TryGetIndex("by_record_type") is null
-                || schema.TryGetIndex("by_path") is null
-                || schema.TryGetIndex("by_qualified_identity") is null)
+            if (!HasRequiredPathIndexes(schema))
             {
                 problems.Add("staging_path_index_missing");
             }
@@ -911,6 +1100,20 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             "KV atomic mutation batch was rejected before WAL append because it exceeds the current checkpoint budget",
             StringComparison.Ordinal);
 
+    private static bool HasRequiredQuerySchema(
+        DocumentCollectionSchema? schema,
+        string fullTextIndexName) =>
+        HasRequiredPathIndexes(schema)
+        && schema!.TryGetFullTextIndex(fullTextIndexName) is not null;
+
+    private static bool HasRequiredPathIndexes(DocumentCollectionSchema? schema) =>
+        schema?.TryGetIndex("by_stable_id") is not null
+        && schema.TryGetIndex("by_record_type") is not null
+        && schema.TryGetIndex("by_path") is not null
+        && schema.TryGetIndex("by_language") is not null
+        && schema.TryGetIndex("by_entity_kind") is not null
+        && schema.TryGetIndex("by_qualified_identity") is not null;
+
     private static string CollectionName(string workspaceId, string indexRevision)
     {
         string value = workspaceId + "\0" + indexRevision;
@@ -976,6 +1179,15 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         DatabaseGenerationResource documents = lease.GetRequiredResource(
             _documentsRole,
             DatabaseGenerationResourceKind.DocumentCollection);
+        DatabaseGenerationResource fullText = lease.GetRequiredResource(
+            _fullTextRole,
+            DatabaseGenerationResourceKind.DocumentFullTextIndex);
+        DocumentCollectionSchema? schema = _database.Documents.Catalog.TryGet(documents.Name);
+        if (!HasRequiredQuerySchema(schema, fullText.Name))
+        {
+            return null;
+        }
+
         CleanupOutcome cleanup = CleanupAfterPublish(snapshot.WorkspaceId);
         return Report(
             activeManifest,
@@ -1108,6 +1320,64 @@ internal sealed record ActiveIndexSearchResult(
     long Candidates,
     long Examined,
     IReadOnlyList<ActiveIndexSearchHit> Hits);
+
+internal sealed class ActiveIndexFilterVisitBudget
+{
+    private readonly long _limit;
+
+    internal ActiveIndexFilterVisitBudget(long limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        _limit = limit;
+    }
+
+    internal long Visits { get; private set; }
+
+    internal void VisitPlanningFile()
+    {
+        Visits++;
+        if (Visits > _limit)
+        {
+            throw new ActiveIndexPlanningPathBudgetExceededException(Visits, _limit);
+        }
+    }
+
+    internal void VisitFilterCandidates(int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        long requested = checked(Visits + count);
+        if (requested > _limit)
+        {
+            throw new ActiveIndexFilterCandidateBudgetExceededException(requested, _limit);
+        }
+
+        Visits = requested;
+    }
+}
+
+internal sealed class ActiveIndexPlanningPathBudgetExceededException : Exception
+{
+    internal ActiveIndexPlanningPathBudgetExceededException(long visits, long limit)
+        : base($"Planning path visits {visits} exceed budget {limit}.")
+    {
+    }
+}
+
+internal sealed class ActiveIndexFilterCandidateBudgetExceededException : Exception
+{
+    internal ActiveIndexFilterCandidateBudgetExceededException(long candidates, long limit)
+        : base($"Full-text filter candidates {candidates} exceed budget {limit}.")
+    {
+    }
+}
+
+internal sealed class ActiveIndexFullTextPostingBudgetExceededException : Exception
+{
+    internal ActiveIndexFullTextPostingBudgetExceededException(long postingVisits, long limit)
+        : base($"Full-text posting visits {postingVisits} exceed budget {limit}.")
+    {
+    }
+}
 
 internal sealed record ActiveIndexSymbolQueryResult(
     string AccessPath,

@@ -329,18 +329,6 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
         bool hasFilters = search.Path is not null
             || search.Language is not null
             || search.Kind is not null;
-        if (search.Mode == "fulltext" && hasFilters)
-        {
-            return Error(
-                McpErrorCodes.CapabilityUnavailable,
-                "fulltext_filter_plan_not_connected",
-                true,
-                activeBinding,
-                correlationId,
-                "workspace.index",
-                "CG-005");
-        }
-
         int pageSize;
         long requestedTopK;
         try
@@ -392,6 +380,10 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 search.Query,
                 offset,
                 pageSize,
+                search.Path,
+                search.Language,
+                search.Kind,
+                maxCandidateCount,
                 cancellationToken);
         }
         catch (OverflowException)
@@ -400,6 +392,33 @@ internal sealed class SonnetDbMcpToolExecutor : IMcpToolExecutor
                 McpErrorCodes.InvalidRequest,
                 "query_cursor_offset_out_of_range",
                 false,
+                activeBinding,
+                correlationId);
+        }
+        catch (ActiveIndexFilterCandidateBudgetExceededException)
+        {
+            return Error(
+                McpErrorCodes.BudgetExhausted,
+                "fulltext_filter_candidate_budget_exhausted",
+                true,
+                activeBinding,
+                correlationId);
+        }
+        catch (ActiveIndexPlanningPathBudgetExceededException)
+        {
+            return Error(
+                McpErrorCodes.BudgetExhausted,
+                "fulltext_path_planning_budget_exhausted",
+                true,
+                activeBinding,
+                correlationId);
+        }
+        catch (ActiveIndexFullTextPostingBudgetExceededException)
+        {
+            return Error(
+                McpErrorCodes.BudgetExhausted,
+                "fulltext_posting_budget_exhausted",
+                true,
                 activeBinding,
                 correlationId);
         }

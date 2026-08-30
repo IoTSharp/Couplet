@@ -88,6 +88,64 @@ public sealed class C1GenerationPublishingTests
     }
 
     [Fact]
+    public async Task StageAndPublish_UnchangedActiveMissingFilterIndex_RebuildsInsteadOfReusingOldSchema()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(workspaceRoot, "Sample.cs"),
+                "public class Sample { public string SharedToken() => \"SharedToken\"; }");
+            DiscoveredWorkspace discovered = await WorkspaceDiscoveryService.DiscoverAsync(
+                workspaceRoot,
+                WorkspaceDiscoveryService.DefaultPolicy);
+            WorkspaceIndexSnapshot firstSnapshot = await IndexSnapshotBuilder.BuildAsync(discovered, null);
+            using var store = new SonnetDbIndexGenerationStore(database);
+            IndexStageReport first = store.StageAndPublish(
+                firstSnapshot,
+                IncrementalIndexPlanner.Plan(null, firstSnapshot),
+                0);
+            Assert.True(first.Published);
+            Assert.False(first.ReusedActiveGeneration);
+            Assert.True(store.DropActiveDocumentIndexForTest(
+                firstSnapshot.WorkspaceId,
+                "by_language"));
+
+            ActiveIndexPlanningSnapshot active = Assert.IsType<ActiveIndexPlanningSnapshot>(
+                store.ReadActivePlanningSnapshot(firstSnapshot.WorkspaceId));
+            WorkspaceIndexSnapshot unchangedSnapshot = await IndexSnapshotBuilder.BuildAsync(
+                discovered,
+                active.PlanningSnapshot.IndexRevision);
+            IncrementalIndexPlan unchangedPlan = IncrementalIndexPlanner.PlanFromPublished(
+                active.PlanningSnapshot,
+                unchangedSnapshot);
+            Assert.False(unchangedPlan.RebuildRequired);
+            Assert.All(
+                unchangedPlan.Changes,
+                change => Assert.Equal(IndexFileChangeKind.Unchanged, change.Kind));
+
+            IndexStageReport rebuilt = store.StageAndPublish(
+                unchangedSnapshot,
+                unchangedPlan,
+                active.DatabaseGenerationRevision);
+
+            Assert.True(rebuilt.Published);
+            Assert.False(rebuilt.ReusedActiveGeneration);
+            Assert.Equal(2, rebuilt.DatabaseGenerationRevision);
+            Assert.Equal(unchangedSnapshot.IndexRevision, rebuilt.Manifest.IndexRevision);
+            using ActiveIndexQueryLease queryLease = store.AcquireActiveIndexQuery(
+                firstSnapshot.WorkspaceId);
+            Assert.Equal(unchangedSnapshot.IndexRevision, queryLease.Manifest.IndexRevision);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
     public async Task StageAndPublish_WithRetiredLease_DefersCleanupAndBindsCursorToRevision()
     {
         string workspaceRoot = TemporaryDirectory();
