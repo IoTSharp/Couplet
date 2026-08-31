@@ -28,6 +28,9 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private static readonly string[] _aotMaintenanceLimitations =
         ["CG-006:sonnetdb_background_maintenance_disabled"];
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private const string _databaseRootLockFileName = ".couplet-store.lock";
+    private const string _databaseRootOwnershipError =
+        "The Couplet database root cannot be exclusively owned by this store.";
     private const string _documentsRole = "code_documents";
     private const string _fullTextRole = "code_search";
     private const string _planningRole = "index_planning";
@@ -47,6 +50,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private static readonly TimeSpan _defaultQueryCursorLeaseRetention = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan _maximumQueryLeaseTimerDueTime =
         TimeSpan.FromMilliseconds(uint.MaxValue - 1d);
+    private static readonly Action<IndexQueryCursorRecoveryFaultPoint> _noQueryCursorRecoveryFault =
+        static _ => { };
     private static readonly string[] _cleanupFailureLimitations =
         ["CPL-015:retired_generation_cleanup_retry_required"];
 #endif
@@ -54,6 +59,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     private readonly KvKeyspace _control;
     private readonly bool _backgroundMaintenanceEnabled;
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private FileStream? _databaseRootLease;
     private readonly object _retainedQueryLeaseSync = new();
     private readonly Dictionary<Guid, RetainedIndexQueryCursor> _retainedQueryLeases = [];
     private readonly ITimer _retainedQueryLeaseTimer;
@@ -132,6 +138,21 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         TimeSpan retiredGenerationRetention,
         TimeProvider? timeProvider,
         TimeSpan queryCursorLeaseRetention)
+        : this(
+            databaseRoot,
+            retiredGenerationRetention,
+            timeProvider,
+            queryCursorLeaseRetention,
+            queryCursorRecoveryFaultTestHook: null)
+    {
+    }
+
+    internal SonnetDbIndexGenerationStore(
+        string databaseRoot,
+        TimeSpan retiredGenerationRetention,
+        TimeProvider? timeProvider,
+        TimeSpan queryCursorLeaseRetention,
+        Action<IndexQueryCursorRecoveryFaultPoint>? queryCursorRecoveryFaultTestHook)
     {
         if (retiredGenerationRetention < TimeSpan.Zero)
         {
@@ -152,14 +173,19 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(databaseRoot);
         string root = Path.GetFullPath(databaseRoot);
         Directory.CreateDirectory(root);
+        FileStream databaseRootLease = AcquireDatabaseRootLease(root);
+        Tsdb? database = null;
         _retiredGenerationRetention = retiredGenerationRetention;
         _queryCursorLeaseRetention = queryCursorLeaseRetention;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        QueryCursorRecoveryFaultTestHook = queryCursorRecoveryFaultTestHook
+            ?? _noQueryCursorRecoveryFault;
         _backgroundMaintenanceEnabled = true;
-        _database = Tsdb.Open(new TsdbOptions { RootDirectory = root });
-        _control = _database.Keyspaces.Open(_controlKeyspaceName);
         try
         {
+            database = Tsdb.Open(new TsdbOptions { RootDirectory = root });
+            _database = database;
+            _control = _database.Keyspaces.Open(_controlKeyspaceName);
             _queryCursorSigningKey = LoadOrCreateQueryCursorSigningKey();
             _retainedQueryLeaseTimer = _timeProvider.CreateTimer(
                 static state => ((SonnetDbIndexGenerationStore)state!).RunRetainedQueryLeaseTimerCallback(),
@@ -167,17 +193,32 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 Timeout.InfiniteTimeSpan,
                 Timeout.InfiniteTimeSpan);
             RestoreRetainedQueryLeases();
+            _databaseRootLease = databaseRootLease;
         }
         catch
         {
-            _retainedQueryLeaseTimer?.Dispose();
-            foreach (RetainedIndexQueryCursor retained in _retainedQueryLeases.Values)
+            try
             {
-                retained.Lease.Dispose();
+                _retainedQueryLeaseTimer?.Dispose();
+                foreach (RetainedIndexQueryCursor retained in _retainedQueryLeases.Values)
+                {
+                    retained.Lease.Dispose();
+                }
+
+                _retainedQueryLeases.Clear();
+            }
+            finally
+            {
+                try
+                {
+                    database?.Dispose();
+                }
+                finally
+                {
+                    databaseRootLease.Dispose();
+                }
             }
 
-            _retainedQueryLeases.Clear();
-            _database.Dispose();
             throw;
         }
     }
@@ -1379,6 +1420,8 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
     internal Action<IndexQueryCursorTransitionFaultPoint>? QueryCursorTransitionFaultTestHook { get; set; }
 
+    internal Action<IndexQueryCursorRecoveryFaultPoint> QueryCursorRecoveryFaultTestHook { get; set; }
+
     internal void AddUnavailableRetainedQueryCursorRecordForTest(
         string workspaceId,
         long generationRevision,
@@ -1641,13 +1684,26 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             retained = _retainedQueryLeases.Values.ToList();
             _retainedQueryLeases.Clear();
         }
-
-        _retainedQueryLeaseTimer.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        DisposeRetainedQueryLeasesAndReleaseSlots(retained, deleteDurableRecords: false);
+        try
+        {
+            _retainedQueryLeaseTimer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            DisposeRetainedQueryLeasesAndReleaseSlots(retained, deleteDurableRecords: false);
+        }
+        finally
+        {
+            try
+            {
+                _database.Dispose();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _databaseRootLease, null)?.Dispose();
+            }
+        }
 #else
         _disposed = true;
-#endif
         _database.Dispose();
+#endif
     }
 
     private IndexStageReport Report(
@@ -1726,6 +1782,39 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
     }
 
 #if COUPLET_SONNETDB_SOURCE_GENERATIONS
+    private static FileStream AcquireDatabaseRootLease(string databaseRoot)
+    {
+        FileStream? lease = null;
+        try
+        {
+            lease = new FileStream(
+                Path.Combine(databaseRoot, _databaseRootLockFileName),
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.None);
+            if (!OperatingSystem.IsMacOS())
+            {
+                lease.Lock(0, 1);
+            }
+
+            return lease;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                lease?.Dispose();
+            }
+            catch (Exception disposeException) when (disposeException is IOException or UnauthorizedAccessException)
+            {
+            }
+
+            throw new IOException(_databaseRootOwnershipError);
+        }
+    }
+
     private IndexStageReport? TryReuseActiveGeneration(
         WorkspaceIndexSnapshot snapshot,
         IncrementalIndexPlan plan,
@@ -2129,11 +2218,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
                 if (remove)
                 {
-                    if (!_control.Delete(entry.Key.Span))
-                    {
-                        throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
-                    }
-
+                    FenceAndRemoveObservedQueryCursorRecord(entry);
                     removedGarbage = true;
                 }
             }
@@ -2162,11 +2247,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
                 || record.State != DurableQueryCursorState.Available
                 || record.ExpiresAtUtc <= _timeProvider.GetUtcNow().ToUniversalTime())
             {
-                if (!_control.Delete(entry.Key.Span))
-                {
-                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
-                }
-
+                FenceAndRemoveObservedQueryCursorRecord(entry);
                 changed = true;
                 continue;
             }
@@ -2179,21 +2260,13 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             catch (DatabaseGenerationException exception)
                 when (exception.Code == DatabaseGenerationErrorCodes.RevisionUnavailable)
             {
-                if (!_control.Delete(entry.Key.Span))
-                {
-                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
-                }
-
+                FenceAndRemoveObservedQueryCursorRecord(entry);
                 changed = true;
                 continue;
             }
             catch (IndexQueryGenerationValidationException)
             {
-                if (!_control.Delete(entry.Key.Span))
-                {
-                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
-                }
-
+                FenceAndRemoveObservedQueryCursorRecord(entry);
                 changed = true;
                 continue;
             }
@@ -2201,11 +2274,7 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
             if (record.ExpiresAtUtc <= _timeProvider.GetUtcNow().ToUniversalTime())
             {
                 lease.Dispose();
-                if (!_control.Delete(entry.Key.Span))
-                {
-                    throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
-                }
-
+                FenceAndRemoveObservedQueryCursorRecord(entry);
                 changed = true;
                 continue;
             }
@@ -2237,6 +2306,36 @@ public sealed class SonnetDbIndexGenerationStore : IDisposable
 
         ScheduleRetainedQueryLeaseTimerUnsafe(
             _timeProvider.GetUtcNow().ToUniversalTime());
+    }
+
+    private void FenceAndRemoveObservedQueryCursorRecord(KvEntry entry)
+    {
+        byte[] terminalValue = TryDecodeQueryCursorRecord(
+                entry.Value.Span,
+                out DurableQueryCursorRecord? record)
+            && record is not null
+            ? EncodeQueryCursorRecord(record with { State = DurableQueryCursorState.Claimed })
+            : entry.Value.ToArray();
+        KvCasResult tombstone = _control.CompareAndSet(
+            entry.Key.Span,
+            entry.Version,
+            terminalValue);
+        if (!tombstone.Succeeded)
+        {
+            throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+        }
+
+        _control.CreateSnapshot();
+        QueryCursorRecoveryFaultTestHook(
+            IndexQueryCursorRecoveryFaultPoint.AfterTerminalSnapshotBeforeDelete);
+        if (!_control.Delete(entry.Key.Span))
+        {
+            throw new InvalidDataException("query_cursor_registry_cleanup_conflict");
+        }
+
+        QueryCursorRecoveryFaultTestHook(
+            IndexQueryCursorRecoveryFaultPoint.AfterDeleteBeforeSnapshot);
+        _control.CreateSnapshot();
     }
 
     private string EncodeQueryCursor(DurableQueryCursorEnvelope envelope)
@@ -3031,6 +3130,12 @@ internal enum IndexQueryCursorTransitionFaultPoint
     AfterReleaseSnapshot,
     AfterExpirationDelete,
     BeforeExpirationTimerMaintenance,
+}
+
+internal enum IndexQueryCursorRecoveryFaultPoint
+{
+    AfterTerminalSnapshotBeforeDelete,
+    AfterDeleteBeforeSnapshot,
 }
 
 internal sealed record CleanupOutcome(

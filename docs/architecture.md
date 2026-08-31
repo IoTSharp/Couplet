@@ -62,9 +62,11 @@ Table、Document 或 KV 中可以保存关系对象的引用或展示摘要，�
 
 默认数据库位于平台应用数据目录，并以 `workspace_id` 隔离；除非用户显式配置，不向代码仓库写索引目录。
 
+source lane 在 `Tsdb.Open` 前持有 database root 下的 `.couplet-store.lock`，同一物理 root 同时只允许一个 live `SonnetDbIndexGenerationStore`。该 lease 覆盖 cursor registry、query lease、generation publish 与 cleanup 的完整 store 生命周期，构造失败或 dispose 后释放；它不是备份数据，后续 live backup 必须显式排除。当前自动化覆盖本机同进程 open race 和 Windows extended-path alias，尚未证明独立进程、Linux/macOS 或 NFS/SMB 锁语义。
+
 ## 5. 增量发布协议
 
-Couplet 不假设 SonnetDB 当前提供跨所有模型的单事务。索引采用 generation 发布协议：
+Couplet 不自行实现跨模型事务或第二提交日志。source lane 把以下 generation 发布协议交给公开 `Tsdb.Generations`，默认固定 package lane 只保留未发布 staging：
 
 1. 固定输入文件清单、Git/dirty revision 和配置，生成新的 `index_revision`。
 2. 所有 Document、FullText、Vector 和 Graph 记录携带该 generation 或指向其稳定实体 ID。
@@ -105,7 +107,7 @@ typed request
 
 ## 8. 进程与接入
 
-首版以一个本地 Couplet host 托管 workspace coordinator、嵌入式 SonnetDB 和 MCP Server。C0 已把共享 `Couplet.Core` / `Couplet.Application`、SonnetDB adapter、CLI、daemon 与 MCP Server executable 分开，并实现只读 stdio initialize、schema discovery 和 capability-gated tool call；索引查询仍 unavailable。若后续成熟 parser 不能进入 Native AOT host，可使用受控的本地 parser worker，但它不能拥有数据库或第二份索引，发布矩阵必须如实标注各 executable/worker 的 AOT 状态。Codex 与 Claude Code 使用同一 schema，不维护客户端专属语义。
+首版以一个本地 Couplet host 托管 workspace coordinator、嵌入式 SonnetDB 和 MCP Server。C0 已把共享 `Couplet.Core` / `Couplet.Application`、SonnetDB adapter、CLI、daemon 与 MCP Server executable 分开，并实现只读 stdio initialize、schema discovery 和 capability-gated tool call。默认 package lane 的索引查询仍 unavailable；source lane 在显式 workspace/database 下已开放 `workspace_status`、`code_search` exact/fulltext Preview 与 `symbol_get`，每次查询使用 generation lease 且不建立第二存储路径。若后续成熟 parser 不能进入 Native AOT host，可使用受控的本地 parser worker，但它不能拥有数据库或第二份索引，发布矩阵必须如实标注各 executable/worker 的 AOT 状态。Codex 与 Claude Code 使用同一 schema，不维护客户端专属语义；当前只有仓库内 client-profile/合同 fixture，真实两个客户端进程仍未验收。
 
 远程多租户、协作写入、IDE 编辑器插件和自动改码不属于首版。它们只有在本地单机合同、权限和生产门禁通过后才能单独进入路线。
 

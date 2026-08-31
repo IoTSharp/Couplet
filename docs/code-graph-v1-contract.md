@@ -32,4 +32,4 @@ generation 合同版本为 `couplet.generation.v1`。一个 manifest 同时记�
 4. 仅当旧 generation 不是 active、`SupersededBy` 等于 active revision 且 query lease 为 0 时才能进入 `Deleted`。
 5. rename/delete/parser 或 model 升级必须在同一新 generation 中清除所有相关派生状态。
 
-跨模型原子发布、snapshot lease 和清理的真实接线继续由 CG-005 阻塞 C1；本合同完成不表示该能力已经实现。
+source lane 已把跨模型原子发布、snapshot/exact-revision lease、generation-bound cursor 和 lease/cutoff-aware cleanup 接到 SonnetDB 公共合同；默认 package lane 仍只提供 generation-independent staging。真实跨进程 cursor/root 竞争、cursor hard-kill CAS、双客户端、固定硬件容量和长稳门禁尚未完成，因此 CG-005 继续 `verifying`，C1 不得据此宣称通过。

@@ -166,6 +166,310 @@ public sealed class C1McpQueryCursorTests
     }
 
     [Fact]
+    public async Task Store_ConcurrentOpenRace_AllowsOneOwnerAndConsumesContinuationOnceAcrossReopen()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex published = await PublishAsync(workspaceRoot, database, 4);
+            WorkspaceBinding binding = Binding(published.Snapshot);
+            string cursor;
+            using (var cursorStore = new SonnetDbIndexGenerationStore(database))
+            {
+                var cursorExecutor = new SonnetDbMcpToolExecutor(cursorStore, 0);
+                cursor = Assert.IsType<string>(Success(DispatchSearch(
+                    cursorExecutor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1)).NextCursor);
+            }
+
+            using var start = new Barrier(2);
+            using var attempted = new CountdownEvent(2);
+            using var releaseOwner = new ManualResetEventSlim(false);
+            Task<StoreOpenAttempt> OpenAsync() => Task.Run(() =>
+            {
+                start.SignalAndWait();
+                try
+                {
+                    var store = new SonnetDbIndexGenerationStore(database);
+                    attempted.Signal();
+                    releaseOwner.Wait();
+                    return new StoreOpenAttempt(store, null);
+                }
+                catch (Exception exception)
+                {
+                    attempted.Signal();
+                    return new StoreOpenAttempt(null, exception);
+                }
+            });
+
+            Task<StoreOpenAttempt>[] attempts = [OpenAsync(), OpenAsync()];
+            bool bothAttempted = attempted.Wait(TimeSpan.FromSeconds(30));
+            releaseOwner.Set();
+            StoreOpenAttempt[] outcomes = await Task.WhenAll(attempts);
+            Assert.True(bothAttempted);
+            SonnetDbIndexGenerationStore owner = Assert.Single(
+                outcomes,
+                outcome => outcome.Store is not null).Store!;
+            IOException collision = Assert.IsType<IOException>(Assert.Single(
+                outcomes,
+                outcome => outcome.Exception is not null).Exception);
+            Assert.Equal(
+                "The Couplet database root cannot be exclusively owned by this store.",
+                collision.Message);
+
+            try
+            {
+                var executor = new SonnetDbMcpToolExecutor(owner, 0);
+                McpToolResponse<CodeSearchItem> finalPage = Success(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 100,
+                    cursor));
+                Assert.Null(finalPage.NextCursor);
+                Assert.NotEmpty(finalPage.Items);
+
+                McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                    executor,
+                    binding,
+                    "SharedToken",
+                    maxItems: 1,
+                    cursor).Error);
+                Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+                Assert.Equal("query_cursor_invalid", replay.Reason);
+            }
+            finally
+            {
+                owner.Dispose();
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            var reopenedExecutor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError reopenedReplay = Assert.IsType<McpError>(DispatchSearch(
+                reopenedExecutor,
+                binding,
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, reopenedReplay.Code);
+            Assert.Equal("query_cursor_invalid", reopenedReplay.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public void Store_WindowsExtendedPathAlias_CompetesForSamePhysicalRootLease()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string database = TemporaryDirectory();
+        string extendedPath = WindowsExtendedPath(database);
+        try
+        {
+            using (var owner = new SonnetDbIndexGenerationStore(database))
+            {
+                IOException collision = Assert.Throws<IOException>(() =>
+                    new SonnetDbIndexGenerationStore(extendedPath));
+                Assert.Equal(
+                    "The Couplet database root cannot be exclusively owned by this store.",
+                    collision.Message);
+                Assert.DoesNotContain(database, collision.ToString(), StringComparison.OrdinalIgnoreCase);
+            }
+
+            using var reopened = new SonnetDbIndexGenerationStore(extendedPath);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public void Store_InitializationFailureAfterRootLease_ReleasesOwnership()
+    {
+        string database = TemporaryDirectory();
+        try
+        {
+            var timeProvider = new ThrowingTimerTimeProvider();
+            InvalidOperationException failure = Assert.Throws<InvalidOperationException>(() =>
+                new SonnetDbIndexGenerationStore(
+                    database,
+                    TimeSpan.Zero,
+                    timeProvider,
+                    TimeSpan.FromMinutes(2)));
+            Assert.Equal("controlled_timer_initialization_failure", failure.Message);
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
+    public async Task Store_DisposeWithIncompleteClaim_ReopenRejectsReplayAndReleasesRetiredRevision()
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 4);
+            WorkspaceIndexSnapshot secondSnapshot;
+            string cursor;
+            IndexQueryRequestLease claimedLease;
+            var store = new SonnetDbIndexGenerationStore(database);
+            try
+            {
+                cursor = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 1);
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, store, first);
+                string queryFingerprint = CodeSearchFingerprint("SharedToken");
+                claimedLease = store.AcquireIndexQuery(
+                    first.Snapshot.WorkspaceId,
+                    cursor,
+                    queryFingerprint,
+                    reserveQueryLeaseSlot: false);
+                Assert.True(claimedLease.CursorRecognized);
+            }
+            finally
+            {
+                store.Dispose();
+            }
+
+            claimedLease.Dispose();
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+            Assert.Equal("query_cursor_invalid", replay.Reason);
+
+            DatabaseGenerationCleanupResult cleanup = reopened.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+
+            McpError afterCleanup = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.StaleRevision, afterCleanup.Code);
+            Assert.Equal("query_cursor_stale", afterCleanup.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Theory]
+    [InlineData((int)IndexQueryCursorRecoveryFaultPoint.AfterTerminalSnapshotBeforeDelete)]
+    [InlineData((int)IndexQueryCursorRecoveryFaultPoint.AfterDeleteBeforeSnapshot)]
+    public async Task Store_RestoreCleanupFault_ReopenFailsClosedAndAllowsRetiredCleanup(
+        int faultPointValue)
+    {
+        string workspaceRoot = TemporaryDirectory();
+        string database = TemporaryDirectory();
+        var faultPoint = (IndexQueryCursorRecoveryFaultPoint)faultPointValue;
+        try
+        {
+            PublishedIndex first = await PublishAsync(workspaceRoot, database, 4);
+            WorkspaceIndexSnapshot secondSnapshot;
+            string cursor;
+            IndexQueryRequestLease claimedLease;
+            var store = new SonnetDbIndexGenerationStore(database);
+            try
+            {
+                cursor = CreateSignedCursor(
+                    store,
+                    first.Snapshot.WorkspaceId,
+                    "SharedToken",
+                    offset: 1);
+                secondSnapshot = await PublishReplacementAsync(workspaceRoot, store, first);
+                claimedLease = store.AcquireIndexQuery(
+                    first.Snapshot.WorkspaceId,
+                    cursor,
+                    CodeSearchFingerprint("SharedToken"),
+                    reserveQueryLeaseSlot: false);
+                Assert.True(claimedLease.CursorRecognized);
+            }
+            finally
+            {
+                store.Dispose();
+            }
+
+            claimedLease.Dispose();
+            IOException failure = Assert.Throws<IOException>(() =>
+                new SonnetDbIndexGenerationStore(
+                    database,
+                    TimeSpan.Zero,
+                    timeProvider: null,
+                    TimeSpan.FromMinutes(2),
+                    observedPoint =>
+                    {
+                        if (observedPoint == faultPoint)
+                        {
+                            throw new IOException("controlled_cursor_recovery_fault");
+                        }
+                    }));
+            Assert.Equal("controlled_cursor_recovery_fault", failure.Message);
+
+            using var reopened = new SonnetDbIndexGenerationStore(database);
+            Assert.Equal(0, reopened.RetainedIndexQueryLeaseCountForTest);
+            var executor = new SonnetDbMcpToolExecutor(reopened, 0);
+            McpError replay = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.InvalidRequest, replay.Code);
+            Assert.Equal("query_cursor_invalid", replay.Reason);
+
+            DatabaseGenerationCleanupResult cleanup = reopened.CleanupRetired(
+                first.Snapshot.WorkspaceId);
+            Assert.Equal([1L], cleanup.RemovedRevisions);
+            Assert.Empty(cleanup.DeferredRevisions);
+
+            McpError afterCleanup = Assert.IsType<McpError>(DispatchSearch(
+                executor,
+                Binding(secondSnapshot),
+                "SharedToken",
+                maxItems: 1,
+                cursor).Error);
+            Assert.Equal(McpErrorCodes.StaleRevision, afterCleanup.Code);
+            Assert.Equal("query_cursor_stale", afterCleanup.Reason);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(workspaceRoot);
+            DeleteTemporaryDirectory(database);
+        }
+    }
+
+    [Fact]
     public async Task CodeSearch_FullTextCursorAcrossRestarts_DoesNotRenewAbsoluteExpiration()
     {
         string workspaceRoot = TemporaryDirectory();
@@ -2259,6 +2563,19 @@ public sealed class C1McpQueryCursorTests
         return path;
     }
 
+    private static string WindowsExtendedPath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        if (fullPath.StartsWith(@"\\?\", StringComparison.Ordinal))
+        {
+            return fullPath;
+        }
+
+        return fullPath.StartsWith(@"\\", StringComparison.Ordinal)
+            ? @"\\?\UNC\" + fullPath[2..]
+            : @"\\?\" + fullPath;
+    }
+
     private static long FullScanCount(DocumentCollectionStore collection)
     {
         System.Reflection.PropertyInfo property = typeof(DocumentCollectionStore).GetProperty(
@@ -2286,6 +2603,22 @@ public sealed class C1McpQueryCursorTests
     private sealed record PublishedIndex(
         WorkspaceIndexSnapshot Snapshot,
         IndexStageReport Report);
+
+    private sealed record StoreOpenAttempt(
+        SonnetDbIndexGenerationStore? Store,
+        Exception? Exception);
+
+    private sealed class ThrowingTimerTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UtcNow;
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period) => throw new InvalidOperationException(
+                "controlled_timer_initialization_failure");
+    }
 
     private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {

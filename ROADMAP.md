@@ -1,6 +1,6 @@
 # Couplet 路线图
 
-> 基线日期：2026-08-10。仓库、产品边界、跨仓依赖和 C0-C4 交付路线已经冻结；C0 基础与合同已完成，C1-C4 产品能力仍为计划状态，不能据此宣称索引、图或混合检索已经可用。
+> 基线日期：2026-08-10。仓库、产品边界、跨仓依赖和 C0-C4 交付路线已经冻结；C0 基础与合同已完成，C1 正在按证据实现，C2-C4 仍为计划状态，不能据此宣称阶段发布门禁、图或混合检索已经可用。
 
 ## 状态
 
@@ -13,7 +13,7 @@
 | 原生属性图无旁路决策 | ✅ 已完成 | ADR 0002、`docs/capability-gaps.md` |
 | 性能缺口优先回收决策 | ✅ 已完成 | ADR 0003、`docs/quality-gates.md` |
 | Couplet C0 基础与合同 | ✅ 已完成 | 版本化 graph/generation/security/MCP 合同、fixture/eval runner、35 个自动化测试和 stdio smoke |
-| Couplet 可执行产品 | 🚧 C1 实现中 | source generation 原子发布、cutoff-aware cleanup、真实子进程提交边界 kill/reopen、daemon watcher 和 MCP exact/fulltext/`symbol_get` 已接线；fulltext cursor 可在 orderly store reopen 后继续同一 retired revision。真实进程重启/跨进程 cursor、Medium/Large capacity、双客户端与 7 天长稳仍受门禁约束，默认 package AOT 仍受限 |
+| Couplet 可执行产品 | 🚧 C1 实现中 | source generation 原子发布、cutoff-aware cleanup、真实子进程提交边界 kill/reopen、daemon watcher 和 MCP exact/fulltext/`symbol_get` 已接线；database root 由单一 live store 独占，fulltext cursor 可在 orderly store reopen 后继续同一 retired revision并对 terminal recovery fail closed。真实进程重启/跨进程 root/cursor 竞争、Medium/Large capacity、真实双客户端与 7 天长稳仍受门禁约束，默认 package AOT 仍受限 |
 | SonnetDB 最新源码联调 | 🚧 generation API 已接线 | 显式 source ProjectReference 已接入 `Tsdb.Generations`；默认 `SonnetDB.Core 3.1.0` package 仍作为独立构建基线，M40/Couplet 联合门禁尚未通过 |
 
 状态符号只描述本行结果；“路线已完成”不等于“路线中的产品能力已完成”。
@@ -35,7 +35,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 | Couplet 阶段 | 使用的 SonnetDB 能力 | 联调/开发开始条件 | 联合退出/发布门禁 | 未通过时的行为 |
 |---|---|---|---|---|
 | C0 | 嵌入式数据库生命周期与稳定 API | 仓库/路线基线已建立 | Couplet 合同/eval runner 与 M40 `#341` workload/SLO 同时冻结 | ✅ 已冻结 `c0-handshake.v1`；不宣称图能力 |
-| C1 | KV、Document、FullText、generation/snapshot/recovery | 最新源码 `Tsdb.Generations` public API 可用 | Couplet revision/crash/cursor/retention/capacity gate 全 PASS | source lane 可继续发布/租约联调；MCP 与发布门禁未通过时不开放索引查询 |
+| C1 | KV、Document、FullText、generation/snapshot/recovery | 最新源码 `Tsdb.Generations` public API 可用 | Couplet revision/crash/cursor/retention/capacity gate 全 PASS | source lane 可继续发布/租约与 Preview 查询联调；默认 package 保持 staging/unavailable，阶段发布门禁不开放 |
 | C2 | 原生 GraphStore、邻接、属性索引、流式路径和诊断 | M40 `#347~#351` 目标 public API 可联调 | M40 `#352` 与 Couplet C2 correctness/performance 同时 PASS，才发布 Preview | 图工具保持 unavailable/内部联调，不做关系表或内存遍历降级 |
 | C3 | FullText、Vector、Graph 的共享 typed hybrid plan | M40 `#353~#358` 目标 API 与相关 M35/M36 能力可联调 | M40 `#359` 与 Couplet C3 Agent/检索 gate 同时 PASS，才发布 Beta | 不在 Couplet 内合并候选或扩图，不隐藏 scan fallback |
 | C4 | 生产图快照、维护、恢复和固定硬件容量 | M40 `#360~#366` 目标能力可联调 | M40 `#367` 与 Couplet C4 长稳/安全/容量 gate 同时 PASS，才发布 1.0 | 不发布 Production/GA，不提高默认资源上限掩盖缺口 |
@@ -77,8 +77,8 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - **CPL-011**：✅ 已实现可替换语言适配器与 Semantic Tier；首批 C#、TypeScript/JavaScript 明确为 lexical `Partial`，unsupported/large input 明确为 `TextOnly`，不宣称完整语义；版本化 C1 fixture 冻结同名、重载和当前不支持 generic method 的边界，lexical adapter `1.1.0` 将声明 confidence 固定为 `Inferred/0.9`。
 - **CPL-012**：✅ 已实现 stable file/symbol/chunk ID、UTF-8 byte/line/column source span、content hash、provenance、adapter version、confidence 和符号边界 chunk；完整 golden snapshot 覆盖三种语言与 Unicode source evidence。
 - **CPL-013**：🚧 已实现初次 snapshot、content-hash rename、修改/删除、producer/branch rebuild 判定和跨分支隔离。source daemon 以 FileSystemWatcher + 默认 30 秒 reconciliation 持续 fresh discovery，队列溢出强制 full rescan，linked worktree/assume-unchanged 变化可触发发布，snapshot failure 最多三次重试后保持旧 active；默认 package lane 仍只做全量 staging。
-- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；source lane 将 planning KV、Document 与 FullText 原子发布，并在显式数据库 MCP 宿主中用单一 query lease 提供 typed `workspace_status`、`code_search` exact/fulltext Preview 与 `symbol_get`。exact / stable symbol 命中 `by_stable_id`，qualified identity 命中 `by_stable_id` 或有界 `by_qualified_identity`；fulltext 的 path/language/entity-kind 过滤通过有界 planning snapshot path glob、`by_path` / `by_language` / `by_entity_kind` 候选交集和 SonnetDB posting-stage filtered search 执行，planning/filter/posting 共用访问预算并显式报告 access path，不使用 Document scan。fulltext cursor 绑定完整过滤 query shape、generation/revision/offset/nonce，并以持久 registry + exact-revision lease 支持 orderly store reopen 后续页；`symbol_get` cursor、真实进程重启/跨进程续页仍 unavailable。
-- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker、checkpoint retry、staging consistency/reopen，以及 source lane publish/reopen、generation-bound cursor、writer fence、lease-aware/cutoff-aware retired cleanup、cleanup failure 隔离、publish 提交边界故障回归和 `workspace_status` 重开/revision selector fail-closed 回归。`--retired-generation-retention` 把生命周期时长传给可控 UTC cutoff，mixed-age 重开只删除到期且无 lease 的 revision；零值保持立即清理。fulltext cursor 使用持久 HMAC key、`Available/Claimed` CAS、最多 128 slot 和默认两分钟绝对 TTL；一次性 cursor 转移、主动 timer、取消/错误/最终页/容量失败、orderly reopen 和 store dispose 均受控释放或恢复。真实 `Couplet.Cli` 子进程在 publish commit 前后被强杀并重开，分别只暴露完整旧/新 generation；snapshot failure 在 one-shot plan/stage/publish 前显式失败。CG-007 已关闭；跨进程 cursor/hard-kill CAS、真实双客户端和固定硬件容量门禁仍未完成。
+- **CPL-014**：🚧 已实现 generation 独立的 SonnetDB Document/FullText staging、path/fulltext index 校验和实际访问路径探针；source lane 将 planning KV、Document 与 FullText 原子发布，并在显式数据库 MCP 宿主中用单一 query lease 提供 typed `workspace_status`、`code_search` exact/fulltext Preview 与 `symbol_get`。exact / stable symbol 命中 `by_stable_id`，qualified identity 命中 `by_stable_id` 或有界 `by_qualified_identity`；fulltext 的 path/language/entity-kind 过滤通过有界 planning snapshot path glob、`by_path` / `by_language` / `by_entity_kind` 候选交集和 SonnetDB posting-stage filtered search 执行，planning/filter/posting 共用访问预算并显式报告 access path，不使用 Document scan。source store 在打开 SonnetDB 前通过 `.couplet-store.lock` 独占 database root，避免两个 live store 同时拥有 cursor registry；fulltext cursor 绑定完整过滤 query shape、generation/revision/offset/nonce，并以持久 registry + exact-revision lease 支持 orderly store reopen 后续页。`symbol_get` cursor、真实进程重启/跨进程续页仍 unavailable。
+- **CPL-015**：🚧 已实现解析失败报告、取消、completion marker、checkpoint retry、staging consistency/reopen，以及 source lane publish/reopen、generation-bound cursor、writer fence、lease-aware/cutoff-aware retired cleanup、cleanup failure 隔离、publish 提交边界故障回归和 `workspace_status` 重开/revision selector fail-closed 回归。`--retired-generation-retention` 把生命周期时长传给可控 UTC cutoff，mixed-age 重开只删除到期且无 lease 的 revision；零值保持立即清理。fulltext cursor 使用持久 HMAC key、`Available/Claimed` CAS、最多 128 slot 和默认两分钟绝对 TTL；恢复时对坏、过期、不可用或已 `Claimed` 记录执行 version-fenced terminal CAS、snapshot、delete、snapshot，两个持久化窗口失败后再次 orderly reopen 仍拒绝 replay、停止保留 retired revision，并允许后续 `CleanupRetired` 删除。成功 cleanup 或 dispose/reopen 会释放 lease；故障路径 fail closed，timer fault 后 lease 可能暂时保留到 dispose/reopen。真实 `Couplet.Cli` 子进程在 publish commit 前后被强杀并重开，分别只暴露完整旧/新 generation；snapshot failure 在 one-shot plan/stage/publish 前显式失败。CG-007 已关闭；真实跨进程 root/cursor 竞争、cursor hard-kill CAS、真实双客户端和固定硬件容量门禁仍未完成。
 
 退出门禁：
 
@@ -88,7 +88,7 @@ SonnetDB 阶段 gate 需要 Couplet 工作负载才能验收，因此“可联�
 - Codex 与 Claude Code 能读取相同合同，所有结果都可回到文件、revision 和 source span。
 - SonnetDB `#343/#346` 所需 snapshot lease/cursor/recovery public contract 与 Couplet generation 发布、query lease 和清理回归同时通过；对应 CG-005 关闭。
 
-状态：🚧 实现中（2026-08-31）。CPL-010~012 已落地；CPL-013~015 的 source lane generation publish/acquire/cursor/cutoff cleanup、writer fence、no-op/reopen、真实子进程 commit 前后 kill/reopen、filter-aware revision provenance、daemon watcher、`workspace_status`、`code_search` exact/fulltext Preview、orderly store reopen 的 durable retired-generation cursor/no-scan、path/language/entity-kind 过滤计划与 `symbol_get` 小型回归已实现，`CG-005` 保持 verifying，`CG-007` 已关闭。最终 source 171/171、package 90/90，CLI/Daemon/MCP Server 的 win-x64 source Native AOT publish 与三个原生 `version` smoke 均通过且无未处置 IL/AOT warning。真实进程重启/跨进程 cursor、hard-kill CAS、双客户端、跨平台、随机故障、Medium/Large 固定硬件与 7 天联合证据仍未取得；Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
+状态：🚧 实现中（2026-08-31）。CPL-010~012 已落地；CPL-013~015 的 source lane generation publish/acquire/cursor/cutoff cleanup、writer fence、no-op/reopen、真实子进程 commit 前后 kill/reopen、filter-aware revision provenance、daemon watcher、`workspace_status`、`code_search` exact/fulltext Preview、database-root 单 owner、orderly store reopen 的 durable retired-generation cursor/no-scan、terminal cleanup 恢复窗口、path/language/entity-kind 过滤计划与 `symbol_get` 小型回归已实现，`CG-005` 保持 verifying，`CG-007` 已关闭。本轮 source 177/177、cursor 定向 44/44、package 90/90，CLI/Daemon/MCP Server 的 win-x64 source Native AOT publish 与三个原生 `version` smoke 均通过且无未处置 IL/AOT warning。真实进程重启/跨进程 root/cursor 竞争、cursor hard-kill CAS、真实双客户端、跨平台、随机故障、Medium/Large 固定硬件、生产 AOT journey 与 7 天联合证据仍未取得；Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。详见 [C1 增量索引实现与证据](docs/c1-indexing-evidence.md)和 [C1 Medium/Large 容量证据](docs/c1-capacity-evidence.md)。
 
 ## C2：原生图代码智能
 

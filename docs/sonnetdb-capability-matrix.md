@@ -7,7 +7,7 @@
 | Couplet 需求 | Couplet 交付 | SonnetDB public capability / 编号 | 联调开始 | Couplet 发布 gate |
 |---|---|---|---|---|
 | workload、语料、schema、SLO | CPL-001~007 | M40 `#341` | 立即同步设计 | 双方冻结相同 manifest/合同后 C0 PASS |
-| generation/cursor/recovery | CPL-002、CPL-013~015 | 最新源码 `Tsdb.Generations` 的 atomic publish、active/exact-revision lease、cursor 与 cutoff cleanup | source ProjectReference、daemon watcher、exact/fulltext/`symbol_get`、durable orderly-reopen cursor/no-scan 与真实 CLI commit 边界已接线；CG-007 已关闭 | 真实进程重启/跨进程 cursor、hard-kill CAS、双客户端与固定硬件 capacity 关闭 CG-005 后 C1 PASS |
+| generation/cursor/recovery | CPL-002、CPL-013~015 | 最新源码 `Tsdb.Generations` 的 atomic publish、active/exact-revision lease、cursor 与 cutoff cleanup | source ProjectReference、daemon watcher、database-root 单 owner、exact/fulltext/`symbol_get`、durable orderly-reopen cursor terminal cleanup/no-scan 与真实 CLI commit 边界已接线；CG-007 已关闭 | 真实进程重启/跨进程 root/cursor 竞争、cursor hard-kill CAS、真实双客户端与固定硬件 capacity 关闭 CG-005 后 C1 PASS |
 | 原生节点/边/邻接/属性索引 | CPL-020~021 | M40 `#347/#348` | 对应 API 可调用 | 纳入 `#352` correctness/recovery gate |
 | 流式 BFS/DFS/path/预算 | CPL-022~024 | M40 `#349/#350` | 对应 API/diagnostics 可调用 | `#352` + Couplet C2 全 PASS 后 Preview |
 | Server/SDK/import parity | Couplet embedded adapter/MCP | M40 `#351` | typed SDK/embedded contract 可调用 | `#352` 联合报告 |
@@ -31,14 +31,14 @@ Couplet 只按 handshake 开放工具。版本号较新不等于 capability 自�
 
 - 默认 lane 固定 `SonnetDB.Core 3.1.0` 官方 package 和 content hash；显式 `UseSonnetDbSource=true` lane 直接 ProjectReference 最新源码，restore lock 隔离在 `obj/`。
 - `couplet.sonnetdb_handshake.v1` 分开报告 `integration_state` 与 `release_level`；public API 存在时前者可为 available，后者在联合门禁通过前仍为 unavailable。
-- source lane 的 atomic publish、cutoff cleanup、filter-aware provenance、daemon watcher 与 exact/fulltext/`symbol_get` 已有小型接线；fulltext cursor 通过持久 HMAC/CAS registry 和 Core exact-revision lease 支持 orderly store reopen，过滤查询不走 Document scan，真实 CLI commit 前后强杀/重开只暴露完整 revision。release level 仍被真实进程重启/跨进程 cursor、hard-kill CAS、双客户端和固定硬件 capacity 的 CG-005 联合门禁阻塞。`hybrid.shared_plan` 继续由 CG-002 阻塞。
+- source lane 的 atomic publish、cutoff cleanup、filter-aware provenance、daemon watcher、database-root 单 owner 与 exact/fulltext/`symbol_get` 已有小型接线；fulltext cursor 通过持久 HMAC/CAS registry 和 Core exact-revision lease 支持 orderly store reopen，并以 terminal CAS/snapshot/delete/snapshot 清理恢复，过滤查询不走 Document scan，真实 CLI commit 前后强杀/重开只暴露完整 revision。release level 仍被真实进程重启/跨进程 root/cursor 竞争、cursor hard-kill CAS、真实双客户端和固定硬件 capacity 的 CG-005 联合门禁阻塞。`hybrid.shared_plan` 继续由 CG-002 阻塞。
 - 八个 MCP schema 和 stdio 协议已就绪；source lane 在显式绑定数据库时可通过 `workspace_status` 读取 active generation 状态，并以 Preview 等级执行 `code_search` exact/fulltext 与 `symbol_get`；C2/C3 工具继续返回稳定 `capability_unavailable`。联合版本记录见 [`contracts/c0-handshake.v1.json`](../contracts/c0-handshake.v1.json)。
 - C1 已通过固定 package 建立 generation 独立 Document collection、stable ID/path/qualified identity indexes 与 FullText index，批量写入、索引一致性、计数、checkpoint 和 reopen 均有自动化证据。
-- `code_search` Preview 实际走 active/retained/exact-revision generation lease；fulltext cursor 使用有预算的 Top-K + offset、默认两分钟绝对 TTL、128 slot 和持久 Available/Claimed registry，orderly reopen 可恢复，超预算/容量 fail fast且不使用 Document scan。它不替代尚缺的真实进程重启/跨进程 cursor、hard-kill CAS、固定硬件或双客户端发布门禁。
-- Codex 与 Claude Code 双客户端回归已验证三个 C1 MCP 工具在只有 staging 时稳定返回 `CG-005/generation_publish_blocked`，响应不含 staging items。
+- `code_search` Preview 实际走 active/retained/exact-revision generation lease；fulltext cursor 使用有预算的 Top-K + offset、默认两分钟绝对 TTL、128 slot 和持久 Available/Claimed registry，orderly reopen 可恢复，terminal cleanup 两个持久化窗口 fail closed，超预算/容量 fail fast且不使用 Document scan。它不替代尚缺的真实进程重启/跨进程 cursor、cursor hard-kill CAS、固定硬件或真实双客户端发布门禁。
+- 仓库内 Codex 与 Claude Code client-profile/合同 fixture 已验证三个 C1 MCP 工具在只有 staging 时稳定返回 `CG-005/generation_publish_blocked`，响应不含 staging items；未启动真实两个客户端进程。
 - 默认 package public API 仍不能组合 generation 不变量；source lane 使用 Core 单一 `Tsdb.Generations` catalog，未建立应用层第二提交日志。CG-005 状态为 verifying。
 - Medium/Large 已完成一次真实 characterization；Large initial、两档 100-file 变化和两档 peak RSS 均未达目标，Correctness/Recovery 与 Performance/Capacity 均保持 FAIL。详细数据见 [`c1-capacity-evidence.md`](c1-capacity-evidence.md)。
-- 默认 package 的 win-x64 Native AOT 继续关闭不兼容 worker并报告 CG-006；最新 source 已修复 worker shutdown。普通 source/JIT handshake 只报告 `source_workers_enabled`，不再从 `UseSonnetDbSource` 外推 AOT 已验证；Native AOT 进程报告 `source_aot_workers_enabled_pending_soak`。2026-08-29 的 source CLI publish/no-op runtime smoke 已通过，本轮 CLI、Daemon、MCP Server source publish 均为 0 个未处置 IL/AOT warning，7 天长稳仍需归档。
+- 默认 package 的 win-x64 Native AOT 继续关闭不兼容 worker并报告 CG-006；最新 source 已修复 worker shutdown。普通 source/JIT handshake 只报告 `source_workers_enabled`，不再从 `UseSonnetDbSource` 外推 AOT 已验证；Native AOT 进程报告 `source_aot_workers_enabled_pending_soak`。2026-08-29 的 source CLI publish/no-op runtime smoke 已通过；2026-08-31 本轮 CLI、Daemon、MCP Server source publish 均为 0 个未处置 IL/AOT warning且三个原生 `version` smoke 退出 0，生产 journey 与 7 天长稳仍需归档。
 
 ## 变更规则
 
